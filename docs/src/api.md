@@ -447,13 +447,46 @@ Clear all memoized plan caches.
 clear_plan_cache!()
 ```
 
+## Dense Matrix Types
+
+### MatrixMPI
+
+```@docs
+MatrixMPI
+```
+
+A distributed dense matrix partitioned by rows across MPI ranks.
+
+**Fields:**
+- `structural_hash::Blake3Hash`: 256-bit Blake3 hash of the structural pattern
+- `row_partition::Vector{Int}`: Row partition boundaries (length = nranks + 1)
+- `col_partition::Vector{Int}`: Column partition boundaries (length = nranks + 1)
+- `A::Matrix{T}`: Local rows (NOT transposed), size = (local_nrows, ncols)
+
+### DenseMatrixVectorPlan
+
+```@docs
+DenseMatrixVectorPlan
+```
+
+A communication plan for gathering vector elements needed for `MatrixMPI * x`.
+
+### DenseTransposePlan
+
+```@docs
+DenseTransposePlan
+```
+
+A communication plan for computing the transpose of a `MatrixMPI`.
+
 ## Type Aliases
 
 ```julia
 const TransposedSparseMatrixMPI{T} = Transpose{T, SparseMatrixMPI{T}}
+const TransposedMatrixMPI{T} = Transpose{T, MatrixMPI{T}}
 ```
 
-Type alias for lazy transpose of `SparseMatrixMPI`.
+Type aliases for lazy transpose of `SparseMatrixMPI` and `MatrixMPI`.
 
 ## Full API Index
 
