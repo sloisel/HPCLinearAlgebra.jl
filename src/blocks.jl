@@ -90,15 +90,15 @@ function Base.cat(As::SparseMatrixMPI{T}...; dims) where T
 
             # Extract local triplets from this block
             my_row_start = A.row_partition[rank + 1]
-            for local_row in 1:size(A.AT, 2)
+            for local_row in 1:size(A.A.parent, 2)
                 global_row_in_block = my_row_start + local_row - 1
                 global_row = row_offset + global_row_in_block
-                for idx in A.AT.colptr[local_row]:(A.AT.colptr[local_row + 1] - 1)
-                    col_in_block = A.AT.rowval[idx]
+                for idx in A.A.parent.colptr[local_row]:(A.A.parent.colptr[local_row + 1] - 1)
+                    col_in_block = A.A.parent.rowval[idx]
                     global_col = col_offset + col_in_block
                     push!(all_I, global_row)
                     push!(all_J, global_col)
-                    push!(all_V, A.AT.nzval[idx])
+                    push!(all_V, A.A.parent.nzval[idx])
                 end
             end
         end
@@ -406,15 +406,15 @@ function blockdiag(As::SparseMatrixMPI{T}...) where T
         col_offset = col_offsets[k]
 
         my_row_start = A.row_partition[rank + 1]
-        for local_row in 1:size(A.AT, 2)
+        for local_row in 1:size(A.A.parent, 2)
             global_row_in_block = my_row_start + local_row - 1
             global_row = row_offset + global_row_in_block
-            for idx in A.AT.colptr[local_row]:(A.AT.colptr[local_row + 1] - 1)
-                col_in_block = A.AT.rowval[idx]
+            for idx in A.A.parent.colptr[local_row]:(A.A.parent.colptr[local_row + 1] - 1)
+                col_in_block = A.A.parent.rowval[idx]
                 global_col = col_offset + col_in_block
                 push!(all_I, global_row)
                 push!(all_J, global_col)
-                push!(all_V, A.AT.nzval[idx])
+                push!(all_V, A.A.parent.nzval[idx])
             end
         end
     end

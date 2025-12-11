@@ -27,7 +27,9 @@ LinearAlgebraMPI implements distributed sparse matrix operations using MPI for p
 
 **SparseMatrixMPI{T}**
 - Rows are partitioned across MPI ranks
-- Stores the **transpose** of local rows as `AT::SparseMatrixCSC` (columns in AT = local rows)
+- `A::Transpose{T,SparseMatrixCSC{T,Int}}`: Local rows wrapped in a Transpose for type clarity
+  - `A.parent` is the underlying CSC storage with shape (ncols, local_nrows), columns = local rows
+  - This layout enables efficient row-wise iteration
 - `row_partition`: Array of size `nranks + 1` defining which rows each rank owns (1-indexed boundaries)
 - `col_partition`: Array of size `nranks + 1` defining column partition (used for transpose operations)
 - `col_indices`: Column indices that appear in the local part (determines which rows of B are needed during multiplication)
@@ -69,7 +71,7 @@ For `y = A * x` where `A::SparseMatrixMPI` and `x::VectorMPI`:
 
 1. **Plan creation** (`VectorPlan` constructor): Uses `Alltoall` to exchange element request counts, then point-to-point to exchange indices
 2. **Value exchange** (`execute_plan!`): Point-to-point `Isend`/`Irecv` to gather `x[A.col_indices]` into a local `gathered` vector
-3. **Local computation**: Reindex `A.AT` to use local indices, then compute `transpose(A_AT_reindexed) * gathered`
+3. **Local computation**: Reindex `A.A.parent` to use local indices, then compute `transpose(A_AT_reindexed) * gathered`
 4. **Result construction**: Result vector `y` inherits `A.row_partition`
 
 Note: Uses `transpose()` (not adjoint `'`) to correctly handle complex values without conjugation.
