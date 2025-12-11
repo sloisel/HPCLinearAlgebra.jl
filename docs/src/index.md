@@ -50,21 +50,23 @@ MPI.Finalize()
 ## Package Overview
 
 ```@contents
-Pages = ["getting-started.md", "examples.md", "api.md", "internals.md"]
+Pages = ["getting-started.md", "examples.md", "api.md"]
 Depth = 2
 ```
 
 ## Installation
 
+Add LinearAlgebraMPI.jl to your project:
+
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/your-username/LinearAlgebraMPI.jl")
+Pkg.add("LinearAlgebraMPI")
 ```
 
-Or in the Julia REPL package mode:
+Or for development:
 
-```
-pkg> add https://github.com/your-username/LinearAlgebraMPI.jl
+```julia
+Pkg.develop(path="/path/to/LinearAlgebraMPI.jl")
 ```
 
 ## Requirements

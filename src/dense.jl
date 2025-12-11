@@ -55,13 +55,21 @@ end
 """
     MatrixMPI(M::Matrix{T}; row_partition=nothing, col_partition=nothing) where T
 
-Create a MatrixMPI from a global matrix M, assuming M is identical on all ranks.
-The matrix is partitioned by rows across ranks.
+Create a MatrixMPI from a global matrix M, partitioning it by rows across MPI ranks.
+
+Each rank extracts only its local rows from `M`, so:
+
+- **Simple usage**: Pass identical `M` to all ranks
+- **Efficient usage**: Pass a matrix with correct `size(M)` on all ranks,
+  but only populate the rows that each rank owns (other rows are ignored)
 
 # Arguments
-- `M::Matrix{T}`: The global matrix (must be identical on all ranks)
+- `M::Matrix{T}`: The global matrix (must have same size on all ranks)
 - `row_partition`: Optional custom row partition (default: even distribution)
 - `col_partition`: Optional custom column partition (default: even distribution, for transpose)
+
+The default row partition assigns `div(m, nranks)` rows per rank,
+with the first `mod(m, nranks)` ranks getting one extra row.
 """
 function MatrixMPI(M::Matrix{T}; row_partition=nothing, col_partition=nothing) where T
     comm = MPI.COMM_WORLD

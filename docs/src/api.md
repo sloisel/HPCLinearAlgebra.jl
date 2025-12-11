@@ -81,12 +81,12 @@ issparse(A)    # Returns true
 ### Reductions
 
 ```julia
-sum(A)         # Sum of all elements
-sum(A; dims=1) # Column sums (returns VectorMPI)
-sum(A; dims=2) # Row sums (returns VectorMPI)
+sum(A)         # Sum of all stored elements
+sum(A; dims=1) # Column sums (returns VectorMPI) - SparseMatrixMPI only
+sum(A; dims=2) # Row sums (returns VectorMPI) - SparseMatrixMPI only
 maximum(A)     # Maximum of stored values
 minimum(A)     # Minimum of stored values
-tr(A)          # Trace (sum of diagonal)
+tr(A)          # Trace (sum of diagonal) - SparseMatrixMPI only
 ```
 
 ```@docs
@@ -163,7 +163,9 @@ mapslices(f, A; dims=1)   # Apply f to each column (requires MPI)
 ```julia
 using LinearAlgebra
 
-A = MatrixMPI(randn(100, 10))
+# Create deterministic test matrix (same on all ranks)
+A_global = Float64.([i + 0.1*j for i in 1:100, j in 1:10])
+A = MatrixMPI(A_global)
 
 # Compute row statistics: norm, max, sum for each row
 # Transforms 100x10 to 100x3

@@ -122,8 +122,16 @@ end
 """
     SparseMatrixMPI{T}(A::SparseMatrixCSC{T,Int}) where T
 
-Create an SparseMatrixMPI from a global sparse matrix A, assuming A is identical on all ranks.
-The matrix is partitioned by rows across ranks.
+Create a SparseMatrixMPI from a global sparse matrix A, partitioning it by rows across MPI ranks.
+
+Each rank extracts only its local rows from `A`, so:
+
+- **Simple usage**: Pass identical `A` to all ranks
+- **Efficient usage**: Pass a matrix with correct `size(A)` on all ranks,
+  but only populate the rows that each rank owns (other rows are ignored)
+
+The default row partition assigns `div(m, nranks)` rows per rank,
+with the first `mod(m, nranks)` ranks getting one extra row.
 """
 function SparseMatrixMPI{T}(A::SparseMatrixCSC{T,Int}) where T
     comm = MPI.COMM_WORLD

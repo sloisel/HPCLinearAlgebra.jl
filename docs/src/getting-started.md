@@ -44,7 +44,7 @@ A = spdiagm(0 => 2.0*ones(n), 1 => -ones(n-1), -1 => -ones(n-1))
 Adist = SparseMatrixMPI{Float64}(A)
 ```
 
-**Important**: All MPI ranks must have identical copies of the input matrix when constructing `SparseMatrixMPI`. The matrix is then automatically partitioned by rows across ranks.
+**Important**: All MPI ranks must have the same matrix **size** when constructing distributed types. However, each rank only extracts its own local rows, so the actual **data** only needs to be correct for each rank's portion.
 
 ### Understanding Row Partitioning
 
@@ -54,6 +54,53 @@ The matrix is partitioned roughly equally by rows. For example, with 4 ranks and
 - Rank 1: rows 26-50
 - Rank 2: rows 51-75
 - Rank 3: rows 76-100
+
+### Efficient Local-Only Construction
+
+For large matrices, you can avoid replicating data across all ranks by only populating each rank's local portion:
+
+```julia
+using MPI
+MPI.Init()
+
+using LinearAlgebraMPI
+using SparseArrays
+
+comm = MPI.COMM_WORLD
+rank = MPI.Comm_rank(comm)
+nranks = MPI.Comm_size(comm)
+
+# Global dimensions
+m, n = 1000, 1000
+
+# Compute which rows this rank owns
+rows_per_rank = div(m, nranks)
+remainder = mod(m, nranks)
+my_row_start = 1 + rank * rows_per_rank + min(rank, remainder)
+my_row_end = my_row_start + rows_per_rank - 1 + (rank < remainder ? 1 : 0)
+
+# Create a sparse matrix with correct size, but only populate local rows
+I, J, V = Int[], Int[], Float64[]
+for i in my_row_start:my_row_end
+    # Example: tridiagonal matrix
+    if i > 1
+        push!(I, i); push!(J, i-1); push!(V, -1.0)
+    end
+    push!(I, i); push!(J, i); push!(V, 2.0)
+    if i < m
+        push!(I, i); push!(J, i+1); push!(V, -1.0)
+    end
+end
+A = sparse(I, J, V, m, n)
+
+# The constructor extracts only local rows - other rows are ignored
+Adist = SparseMatrixMPI{Float64}(A)
+```
+
+This pattern is useful when:
+- The global matrix is too large to fit in memory on each rank
+- You're generating matrix entries programmatically
+- You want to minimize memory usage during construction
 
 ## Basic Operations
 
@@ -194,18 +241,20 @@ clear_plan_cache!()
 
 ### Use Deterministic Test Data
 
-For testing, avoid random matrices since they'll differ across ranks:
+For testing with the simple "replicate everywhere" pattern, avoid random matrices since they'll differ across ranks:
 
 ```julia
-# Bad - different on each rank
+# Bad - different random values on each rank
 A = sprand(100, 100, 0.01)
 
-# Good - deterministic, identical on all ranks
+# Good - deterministic formula, same on all ranks
 I = [1:100; 1:99; 2:100]
 J = [1:100; 2:100; 1:99]
 V = [2.0*ones(100); -0.5*ones(99); -0.5*ones(99)]
 A = sparse(I, J, V, 100, 100)
 ```
+
+Alternatively, use the [local-only construction pattern](#Efficient-Local-Only-Construction) where each rank generates only its own rows.
 
 ## Next Steps
 

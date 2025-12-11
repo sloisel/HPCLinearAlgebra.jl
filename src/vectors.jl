@@ -20,7 +20,16 @@ end
     VectorMPI(v_global::Vector{T}, comm::MPI.Comm=MPI.COMM_WORLD) where T
 
 Create a VectorMPI from a global vector, partitioning it across MPI ranks.
-Assumes v_global is identical on all ranks.
+
+The vector is partitioned roughly equally across ranks. Each rank extracts only
+its local portion from `v_global`, so:
+
+- **Simple usage**: Pass identical `v_global` to all ranks
+- **Efficient usage**: Pass a vector with correct `length(v_global)` on all ranks,
+  but only populate the elements that each rank owns (other elements are ignored)
+
+The partition boundaries can be computed as `div(n, nranks)` elements per rank,
+with the first `mod(n, nranks)` ranks getting one extra element.
 """
 function VectorMPI(v_global::Vector{T}, comm::MPI.Comm=MPI.COMM_WORLD) where T
     nranks = MPI.Comm_size(comm)
