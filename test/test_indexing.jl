@@ -825,6 +825,656 @@ end
 
 MPI.Barrier(comm)
 
+# ============================================================================
+# Cross-rank communication tests
+# These tests use indices that span multiple MPI ranks to exercise
+# point-to-point communication paths
+# ============================================================================
+
+if rank == 0
+    println("[test] Cross-rank VectorMPI getindex with VectorMPI indices")
+    flush(stdout)
+end
+
+# Create a larger vector to ensure indices span multiple ranks
+n_large = 100
+v_large_global = Float64[i * 1.5 for i in 1:n_large]
+v_large = VectorMPI(v_large_global)
+
+# Create indices that definitely span multiple ranks
+# Use indices from beginning, middle and end to ensure cross-rank access
+idx_crossrank_global = vcat(1:5, div(n_large,2)-2:div(n_large,2)+2, n_large-4:n_large)
+idx_crossrank = VectorMPI(idx_crossrank_global)
+result_crossrank = v_large[idx_crossrank]
+
+@test length(result_crossrank) == length(idx_crossrank_global)
+result_gathered = gather_to_root(result_crossrank)
+if rank == 0
+    for k in 1:length(idx_crossrank_global)
+        @test result_gathered[k] ≈ v_large_global[idx_crossrank_global[k]] atol=TOL
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] Cross-rank VectorMPI setindex! with VectorMPI indices")
+    flush(stdout)
+end
+
+# Test setindex! with cross-rank indices
+v_large_modify = VectorMPI(copy(v_large_global))
+idx_set_crossrank = VectorMPI(vcat(1:3, n_large-2:n_large))
+src_set_crossrank = VectorMPI(Float64[1000.0 + i for i in 1:6])
+v_large_modify[idx_set_crossrank] = src_set_crossrank
+
+v_large_gathered = gather_to_root(v_large_modify)
+if rank == 0
+    # Check modified values
+    @test v_large_gathered[1] ≈ 1001.0 atol=TOL
+    @test v_large_gathered[2] ≈ 1002.0 atol=TOL
+    @test v_large_gathered[3] ≈ 1003.0 atol=TOL
+    @test v_large_gathered[n_large-2] ≈ 1004.0 atol=TOL
+    @test v_large_gathered[n_large-1] ≈ 1005.0 atol=TOL
+    @test v_large_gathered[n_large] ≈ 1006.0 atol=TOL
+    # Check unmodified values
+    @test v_large_gathered[4] ≈ v_large_global[4] atol=TOL
+    @test v_large_gathered[50] ≈ v_large_global[50] atol=TOL
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] Cross-rank MatrixMPI getindex with VectorMPI indices")
+    flush(stdout)
+end
+
+# Create larger dense matrix
+M_large_global = Float64[i + j/100 for i in 1:40, j in 1:10]
+M_large = MatrixMPI(M_large_global)
+
+# Cross-rank row indices
+row_idx_large = VectorMPI(vcat(1:3, 20:22, 38:40))
+col_idx_large = VectorMPI([1, 5, 10])
+
+result_M_large = M_large[row_idx_large, col_idx_large]
+@test size(result_M_large) == (9, 3)
+
+result_M_gathered = gather_to_root(result_M_large)
+row_idx_arr = vcat(1:3, 20:22, 38:40)
+col_idx_arr = [1, 5, 10]
+if rank == 0
+    for i in 1:9
+        for j in 1:3
+            @test result_M_gathered[i, j] ≈ M_large_global[row_idx_arr[i], col_idx_arr[j]] atol=TOL
+        end
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] Cross-rank MatrixMPI setindex! with VectorMPI indices")
+    flush(stdout)
+end
+
+# Test cross-rank setindex!
+M_large_modify = MatrixMPI(zeros(40, 10))
+row_idx_set_large = VectorMPI(vcat(1:2, 39:40))
+col_idx_set_large = VectorMPI([2, 8])
+src_M_large = MatrixMPI(ones(4, 2) * 77.0)
+
+M_large_modify[row_idx_set_large, col_idx_set_large] = src_M_large
+
+M_large_modify_gathered = gather_to_root(M_large_modify)
+if rank == 0
+    @test M_large_modify_gathered[1, 2] ≈ 77.0 atol=TOL
+    @test M_large_modify_gathered[1, 8] ≈ 77.0 atol=TOL
+    @test M_large_modify_gathered[2, 2] ≈ 77.0 atol=TOL
+    @test M_large_modify_gathered[39, 2] ≈ 77.0 atol=TOL
+    @test M_large_modify_gathered[40, 8] ≈ 77.0 atol=TOL
+    @test M_large_modify_gathered[20, 5] ≈ 0.0 atol=TOL  # Unchanged
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] Cross-rank SparseMatrixMPI getindex with VectorMPI indices")
+    flush(stdout)
+end
+
+# Create larger sparse matrix with cross-rank structure
+I_large = vcat(1:40, 1:20)  # Diagonal + some off-diagonals
+J_large = vcat(1:40, 21:40)
+V_large = Float64[i + j/100 for (i, j) in zip(I_large, J_large)]
+A_large_global = sparse(I_large, J_large, V_large, 40, 40)
+A_large = SparseMatrixMPI{Float64}(A_large_global)
+
+row_idx_sparse_large = VectorMPI(vcat(1:3, 38:40))
+col_idx_sparse_large = VectorMPI([1, 20, 40])
+
+result_A_large = A_large[row_idx_sparse_large, col_idx_sparse_large]
+@test size(result_A_large) == (6, 3)
+
+result_A_gathered = gather_to_root(result_A_large)
+row_arr = vcat(1:3, 38:40)
+col_arr = [1, 20, 40]
+if rank == 0
+    for i in 1:6
+        for j in 1:3
+            @test result_A_gathered[i, j] ≈ A_large_global[row_arr[i], col_arr[j]] atol=TOL
+        end
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] Cross-rank SparseMatrixMPI setindex! with VectorMPI indices")
+    flush(stdout)
+end
+
+# Test cross-rank setindex! for SparseMatrixMPI (structural modification)
+A_large_modify = SparseMatrixMPI{Float64}(spzeros(40, 40))
+row_idx_sparse_set = VectorMPI(vcat(1:2, 39:40))
+col_idx_sparse_set = VectorMPI([1, 40])
+src_A_large = MatrixMPI(ones(4, 2) * 88.0)
+
+A_large_modify[row_idx_sparse_set, col_idx_sparse_set] = src_A_large
+
+A_large_modify_gathered = gather_to_root(A_large_modify)
+if rank == 0
+    @test A_large_modify_gathered[1, 1] ≈ 88.0 atol=TOL
+    @test A_large_modify_gathered[1, 40] ≈ 88.0 atol=TOL
+    @test A_large_modify_gathered[2, 1] ≈ 88.0 atol=TOL
+    @test A_large_modify_gathered[39, 1] ≈ 88.0 atol=TOL
+    @test A_large_modify_gathered[40, 40] ≈ 88.0 atol=TOL
+    @test A_large_modify_gathered[20, 20] ≈ 0.0 atol=TOL  # Unchanged
+end
+
+MPI.Barrier(comm)
+
+# ============================================================================
+# Structural modification tests (SparseMatrixMPI insert new nonzeros)
+# ============================================================================
+
+if rank == 0
+    println("[test] SparseMatrixMPI structural modification - single element insert")
+    flush(stdout)
+end
+
+# Create sparse matrix and insert at a position that has no structural nonzero
+I_struct = [1, 2, 3, 4]
+J_struct = [1, 2, 3, 4]
+V_struct = [1.0, 2.0, 3.0, 4.0]
+A_struct_global = sparse(I_struct, J_struct, V_struct, 8, 8)
+A_struct = SparseMatrixMPI{Float64}(A_struct_global)
+
+# Insert at (1, 5) which is a structural zero
+A_struct[1, 5] = 99.0
+
+# Verify the insertion
+@test A_struct[1, 5] ≈ 99.0 atol=TOL
+# Original values should be unchanged
+@test A_struct[1, 1] ≈ 1.0 atol=TOL
+@test A_struct[2, 2] ≈ 2.0 atol=TOL
+
+MPI.Barrier(comm)
+
+# ============================================================================
+# Cached transpose invalidation tests
+# ============================================================================
+
+if rank == 0
+    println("[test] Cached transpose bidirectional invalidation")
+    flush(stdout)
+end
+
+# Create a matrix and compute its transpose to create cached_transpose
+I_cache = [1, 2, 3, 4, 1]
+J_cache = [1, 2, 3, 4, 3]
+V_cache = [1.0, 2.0, 3.0, 4.0, 0.5]
+A_cache_global = sparse(I_cache, J_cache, V_cache, 6, 6)
+A_cache = SparseMatrixMPI{Float64}(A_cache_global)
+
+# Compute transpose by multiplying with identity - this triggers transpose materialization
+# Use transpose(A) * B to force materialization and cache creation
+# Note: sparse(I(6)) returns Bool, need Float64
+identity_global = sparse(Float64.(I(6)))
+B_cache = SparseMatrixMPI{Float64}(identity_global)
+C_cache = transpose(A_cache) * B_cache
+# After this, A_cache.cached_transpose should be populated
+
+# Verify cache was created
+@test A_cache.cached_transpose !== nothing
+AT_cache = A_cache.cached_transpose
+@test AT_cache.cached_transpose !== nothing
+@test AT_cache.cached_transpose === A_cache  # Bidirectional link
+
+# Now do a structural modification on A - this should invalidate both caches
+# (non-structural modifications don't invalidate cache, only structural ones do)
+A_cache[2, 5] = 99.0  # Insert at a position that's not in sparsity pattern
+
+# A_cache's cached transpose should now be nothing
+@test A_cache.cached_transpose === nothing
+# AT_cache's cached_transpose should also have been invalidated through the bidirectional link
+@test AT_cache.cached_transpose === nothing
+
+MPI.Barrier(comm)
+
+# ============================================================================
+# Mixed indexing tests: VectorMPI + range, VectorMPI + Colon, VectorMPI + Int
+# ============================================================================
+
+if rank == 0
+    println("[test] MatrixMPI getindex with VectorMPI rows and range columns")
+    flush(stdout)
+end
+
+row_idx_mix = VectorMPI([2, 5, 8])
+M_mix = M[row_idx_mix, 3:7]
+@test size(M_mix) == (3, 5)
+
+M_mix_gathered = gather_to_root(M_mix)
+if rank == 0
+    for (local_i, global_i) in enumerate([2, 5, 8])
+        for (local_j, global_j) in enumerate(3:7)
+            @test M_mix_gathered[local_i, local_j] ≈ M_global[global_i, global_j] atol=TOL
+        end
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] MatrixMPI getindex with range rows and VectorMPI columns")
+    flush(stdout)
+end
+
+col_idx_mix = VectorMPI([1, 4, 7, 10])
+M_mix2 = M[2:5, col_idx_mix]
+@test size(M_mix2) == (4, 4)
+
+M_mix2_gathered = gather_to_root(M_mix2)
+if rank == 0
+    for (local_i, global_i) in enumerate(2:5)
+        for (local_j, global_j) in enumerate([1, 4, 7, 10])
+            @test M_mix2_gathered[local_i, local_j] ≈ M_global[global_i, global_j] atol=TOL
+        end
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] MatrixMPI getindex with VectorMPI rows and Colon columns")
+    flush(stdout)
+end
+
+row_idx_colon = VectorMPI([1, 6, n])
+M_colon = M[row_idx_colon, :]
+@test size(M_colon) == (3, n)
+
+M_colon_gathered = gather_to_root(M_colon)
+if rank == 0
+    for (local_i, global_i) in enumerate([1, 6, n])
+        for j in 1:n
+            @test M_colon_gathered[local_i, j] ≈ M_global[global_i, j] atol=TOL
+        end
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] MatrixMPI getindex with Colon rows and VectorMPI columns")
+    flush(stdout)
+end
+
+col_idx_colon = VectorMPI([2, 5, 8, 11])
+M_colon2 = M[:, col_idx_colon]
+@test size(M_colon2) == (n, 4)
+
+M_colon2_gathered = gather_to_root(M_colon2)
+if rank == 0
+    for i in 1:n
+        for (local_j, global_j) in enumerate([2, 5, 8, 11])
+            @test M_colon2_gathered[i, local_j] ≈ M_global[i, global_j] atol=TOL
+        end
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] MatrixMPI getindex with VectorMPI rows and Int column")
+    flush(stdout)
+end
+
+row_idx_int = VectorMPI([1, 4, 7, 10])
+M_int_col = M[row_idx_int, 5]
+@test M_int_col isa VectorMPI
+@test length(M_int_col) == 4
+
+M_int_col_gathered = gather_to_root(M_int_col)
+if rank == 0
+    for (local_i, global_i) in enumerate([1, 4, 7, 10])
+        @test M_int_col_gathered[local_i] ≈ M_global[global_i, 5] atol=TOL
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] MatrixMPI getindex with Int row and VectorMPI columns")
+    flush(stdout)
+end
+
+col_idx_int = VectorMPI([2, 4, 6, 8])
+M_int_row = M[3, col_idx_int]
+@test M_int_row isa VectorMPI
+@test length(M_int_row) == 4
+
+M_int_row_gathered = gather_to_root(M_int_row)
+if rank == 0
+    for (local_j, global_j) in enumerate([2, 4, 6, 8])
+        @test M_int_row_gathered[local_j] ≈ M_global[3, global_j] atol=TOL
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] SparseMatrixMPI getindex with VectorMPI rows and range columns")
+    flush(stdout)
+end
+
+row_idx_sp_mix = VectorMPI([1, 3, 5, 7])
+A_mix = A[row_idx_sp_mix, 2:6]
+@test size(A_mix) == (4, 5)
+
+A_mix_gathered = gather_to_root(A_mix)
+if rank == 0
+    for (local_i, global_i) in enumerate([1, 3, 5, 7])
+        for (local_j, global_j) in enumerate(2:6)
+            @test A_mix_gathered[local_i, local_j] ≈ A_global[global_i, global_j] atol=TOL
+        end
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] SparseMatrixMPI getindex with range rows and VectorMPI columns")
+    flush(stdout)
+end
+
+col_idx_sp_mix = VectorMPI([1, 3, 5, 7])
+A_mix2 = A[2:5, col_idx_sp_mix]
+@test size(A_mix2) == (4, 4)
+
+A_mix2_gathered = gather_to_root(A_mix2)
+if rank == 0
+    for (local_i, global_i) in enumerate(2:5)
+        for (local_j, global_j) in enumerate([1, 3, 5, 7])
+            @test A_mix2_gathered[local_i, local_j] ≈ A_global[global_i, global_j] atol=TOL
+        end
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] SparseMatrixMPI getindex with VectorMPI rows and Colon columns")
+    flush(stdout)
+end
+
+row_idx_sp_colon = VectorMPI([2, 4, 6, 8])
+A_colon = A[row_idx_sp_colon, :]
+@test size(A_colon) == (4, n)
+
+A_colon_gathered = gather_to_root(A_colon)
+if rank == 0
+    for (local_i, global_i) in enumerate([2, 4, 6, 8])
+        for j in 1:n
+            @test A_colon_gathered[local_i, j] ≈ A_global[global_i, j] atol=TOL
+        end
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] SparseMatrixMPI getindex with Colon rows and VectorMPI columns")
+    flush(stdout)
+end
+
+col_idx_sp_colon = VectorMPI([1, 4, 8])
+A_colon2 = A[:, col_idx_sp_colon]
+@test size(A_colon2) == (n, 3)
+
+A_colon2_gathered = gather_to_root(A_colon2)
+if rank == 0
+    for i in 1:n
+        for (local_j, global_j) in enumerate([1, 4, 8])
+            @test A_colon2_gathered[i, local_j] ≈ A_global[i, global_j] atol=TOL
+        end
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] SparseMatrixMPI getindex with VectorMPI rows and Int column")
+    flush(stdout)
+end
+
+row_idx_sp_int = VectorMPI([1, 3, 5, 7])
+A_int_col = A[row_idx_sp_int, 3]
+@test A_int_col isa VectorMPI
+@test length(A_int_col) == 4
+
+A_int_col_gathered = gather_to_root(A_int_col)
+if rank == 0
+    for (local_i, global_i) in enumerate([1, 3, 5, 7])
+        @test A_int_col_gathered[local_i] ≈ A_global[global_i, 3] atol=TOL
+    end
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] SparseMatrixMPI getindex with Int row and VectorMPI columns")
+    flush(stdout)
+end
+
+col_idx_sp_int = VectorMPI([1, 2, 3, 4])
+A_int_row = A[2, col_idx_sp_int]
+@test A_int_row isa VectorMPI
+@test length(A_int_row) == 4
+
+A_int_row_gathered = gather_to_root(A_int_row)
+if rank == 0
+    for (local_j, global_j) in enumerate([1, 2, 3, 4])
+        @test A_int_row_gathered[local_j] ≈ A_global[2, global_j] atol=TOL
+    end
+end
+
+MPI.Barrier(comm)
+
+# ============================================================================
+# Mixed setindex! tests
+# ============================================================================
+
+if rank == 0
+    println("[test] MatrixMPI setindex! with VectorMPI rows and range columns")
+    flush(stdout)
+end
+
+M_setmix = MatrixMPI(zeros(n, n))
+row_idx_setmix = VectorMPI([1, 4, 7])
+M_setmix[row_idx_setmix, 2:5] = MatrixMPI(ones(3, 4) * 55.0)
+
+M_setmix_gathered = gather_to_root(M_setmix)
+if rank == 0
+    @test M_setmix_gathered[1, 2] ≈ 55.0 atol=TOL
+    @test M_setmix_gathered[4, 3] ≈ 55.0 atol=TOL
+    @test M_setmix_gathered[7, 5] ≈ 55.0 atol=TOL
+    @test M_setmix_gathered[2, 2] ≈ 0.0 atol=TOL  # Unchanged
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] MatrixMPI setindex! with range rows and VectorMPI columns")
+    flush(stdout)
+end
+
+M_setmix2 = MatrixMPI(zeros(n, n))
+col_idx_setmix = VectorMPI([1, 5, 9])
+M_setmix2[2:4, col_idx_setmix] = MatrixMPI(ones(3, 3) * 66.0)
+
+M_setmix2_gathered = gather_to_root(M_setmix2)
+if rank == 0
+    @test M_setmix2_gathered[2, 1] ≈ 66.0 atol=TOL
+    @test M_setmix2_gathered[3, 5] ≈ 66.0 atol=TOL
+    @test M_setmix2_gathered[4, 9] ≈ 66.0 atol=TOL
+    @test M_setmix2_gathered[5, 5] ≈ 0.0 atol=TOL  # Unchanged
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] MatrixMPI setindex! with VectorMPI rows and Int column")
+    flush(stdout)
+end
+
+M_setint = MatrixMPI(zeros(n, n))
+row_idx_setint = VectorMPI([2, 6, 10])
+M_setint[row_idx_setint, 4] = VectorMPI([111.0, 222.0, 333.0])
+
+M_setint_gathered = gather_to_root(M_setint)
+if rank == 0
+    @test M_setint_gathered[2, 4] ≈ 111.0 atol=TOL
+    @test M_setint_gathered[6, 4] ≈ 222.0 atol=TOL
+    @test M_setint_gathered[10, 4] ≈ 333.0 atol=TOL
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] MatrixMPI setindex! with Int row and VectorMPI columns")
+    flush(stdout)
+end
+
+M_setint2 = MatrixMPI(zeros(n, n))
+col_idx_setint = VectorMPI([3, 7, 11])
+M_setint2[5, col_idx_setint] = VectorMPI([444.0, 555.0, 666.0])
+
+M_setint2_gathered = gather_to_root(M_setint2)
+if rank == 0
+    @test M_setint2_gathered[5, 3] ≈ 444.0 atol=TOL
+    @test M_setint2_gathered[5, 7] ≈ 555.0 atol=TOL
+    @test M_setint2_gathered[5, 11] ≈ 666.0 atol=TOL
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] SparseMatrixMPI setindex! with VectorMPI rows and range columns")
+    flush(stdout)
+end
+
+A_setmix = SparseMatrixMPI{Float64}(spzeros(n, n))
+row_idx_sp_setmix = VectorMPI([1, 4, 7])
+A_setmix[row_idx_sp_setmix, 2:4] = MatrixMPI(ones(3, 3) * 77.0)
+
+A_setmix_gathered = gather_to_root(A_setmix)
+if rank == 0
+    @test A_setmix_gathered[1, 2] ≈ 77.0 atol=TOL
+    @test A_setmix_gathered[4, 3] ≈ 77.0 atol=TOL
+    @test A_setmix_gathered[7, 4] ≈ 77.0 atol=TOL
+    @test A_setmix_gathered[2, 2] ≈ 0.0 atol=TOL  # Unchanged
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] SparseMatrixMPI setindex! with range rows and VectorMPI columns")
+    flush(stdout)
+end
+
+A_setmix2 = SparseMatrixMPI{Float64}(spzeros(n, n))
+col_idx_sp_setmix = VectorMPI([1, 5, 9])
+A_setmix2[2:4, col_idx_sp_setmix] = MatrixMPI(ones(3, 3) * 88.0)
+
+A_setmix2_gathered = gather_to_root(A_setmix2)
+if rank == 0
+    @test A_setmix2_gathered[2, 1] ≈ 88.0 atol=TOL
+    @test A_setmix2_gathered[3, 5] ≈ 88.0 atol=TOL
+    @test A_setmix2_gathered[4, 9] ≈ 88.0 atol=TOL
+    @test A_setmix2_gathered[5, 5] ≈ 0.0 atol=TOL  # Unchanged
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] SparseMatrixMPI setindex! with VectorMPI rows and Int column")
+    flush(stdout)
+end
+
+A_setint = SparseMatrixMPI{Float64}(spzeros(n, n))
+row_idx_sp_setint = VectorMPI([2, 6, 10])
+A_setint[row_idx_sp_setint, 4] = VectorMPI([111.0, 222.0, 333.0])
+
+A_setint_gathered = gather_to_root(A_setint)
+if rank == 0
+    @test A_setint_gathered[2, 4] ≈ 111.0 atol=TOL
+    @test A_setint_gathered[6, 4] ≈ 222.0 atol=TOL
+    @test A_setint_gathered[10, 4] ≈ 333.0 atol=TOL
+end
+
+MPI.Barrier(comm)
+
+if rank == 0
+    println("[test] SparseMatrixMPI setindex! with Int row and VectorMPI columns")
+    flush(stdout)
+end
+
+A_setint2 = SparseMatrixMPI{Float64}(spzeros(n, n))
+col_idx_sp_setint = VectorMPI([3, 7, 11])
+A_setint2[5, col_idx_sp_setint] = VectorMPI([444.0, 555.0, 666.0])
+
+A_setint2_gathered = gather_to_root(A_setint2)
+if rank == 0
+    @test A_setint2_gathered[5, 3] ≈ 444.0 atol=TOL
+    @test A_setint2_gathered[5, 7] ≈ 555.0 atol=TOL
+    @test A_setint2_gathered[5, 11] ≈ 666.0 atol=TOL
+end
+
+MPI.Barrier(comm)
+
+# ============================================================================
+# Range setindex! with SparseMatrixMPI (matrix source)
+# ============================================================================
+
+if rank == 0
+    println("[test] SparseMatrixMPI range setindex! (matrix)")
+    flush(stdout)
+end
+
+A_range_matrix = SparseMatrixMPI{Float64}(copy(A_global))
+new_block = Float64[100*i + j for i in 1:3, j in 1:4]
+A_range_matrix[2:4, 3:6] = SparseMatrixMPI{Float64}(sparse(new_block))
+
+for i in 2:4
+    for j in 3:6
+        @test A_range_matrix[i, j] ≈ 100*(i-1) + (j-2) atol=TOL
+    end
+end
+
+MPI.Barrier(comm)
+
 end  # QuietTestSet
 
 # Aggregate counts across ranks

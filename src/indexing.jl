@@ -2,25 +2,6 @@
 # Communication tags: 40 (index request), 41 (value response)
 
 """
-    _mpi_abort_with_stacktrace(msg::String)
-
-Print an error message with stacktrace and abort all MPI processes.
-Used for unrecoverable errors like structural modifications.
-"""
-function _mpi_abort_with_stacktrace(msg::String)
-    comm = MPI.COMM_WORLD
-    rank = MPI.Comm_rank(comm)
-    io = stderr
-    println(io, "ERROR on rank $rank: $msg")
-    println(io, "Stacktrace:")
-    for (i, frame) in enumerate(stacktrace())
-        println(io, "  [$i] $frame")
-    end
-    flush(io)
-    MPI.Abort(comm, 1)
-end
-
-"""
     _invalidate_cached_transpose!(A::SparseMatrixMPI)
 
 Invalidate the cached transpose of A bidirectionally.
@@ -58,7 +39,7 @@ function Base.getindex(v::VectorMPI{T}, i::Integer) where T
 
     n = length(v)
     if i < 1 || i > n
-        _mpi_abort_with_stacktrace("VectorMPI index out of bounds: i=$i, length=$n")
+        error("VectorMPI index out of bounds: i=$i, length=$n")
     end
 
     # Find owner using binary search on partition
@@ -103,7 +84,7 @@ function Base.setindex!(v::VectorMPI{T}, val, i::Integer) where T
 
     n = length(v)
     if i < 1 || i > n
-        _mpi_abort_with_stacktrace("VectorMPI index out of bounds: i=$i, length=$n")
+        error("VectorMPI index out of bounds: i=$i, length=$n")
     end
 
     # Find owner using binary search on partition
@@ -184,10 +165,10 @@ function Base.getindex(A::SparseMatrixMPI{T}, i::Integer, j::Integer) where T
 
     m, n = size(A)
     if i < 1 || i > m
-        _mpi_abort_with_stacktrace("SparseMatrixMPI row index out of bounds: i=$i, nrows=$m")
+        error("SparseMatrixMPI row index out of bounds: i=$i, nrows=$m")
     end
     if j < 1 || j > n
-        _mpi_abort_with_stacktrace("SparseMatrixMPI column index out of bounds: j=$j, ncols=$n")
+        error("SparseMatrixMPI column index out of bounds: j=$j, ncols=$n")
     end
 
     # Find owner of row i using binary search on row_partition
@@ -264,10 +245,10 @@ function Base.setindex!(A::SparseMatrixMPI{T}, val, i::Integer, j::Integer) wher
 
     m, n = size(A)
     if i < 1 || i > m
-        _mpi_abort_with_stacktrace("SparseMatrixMPI row index out of bounds: i=$i, nrows=$m")
+        error("SparseMatrixMPI row index out of bounds: i=$i, nrows=$m")
     end
     if j < 1 || j > n
-        _mpi_abort_with_stacktrace("SparseMatrixMPI column index out of bounds: j=$j, ncols=$n")
+        error("SparseMatrixMPI column index out of bounds: j=$j, ncols=$n")
     end
 
     # Find owner of row i
@@ -364,10 +345,10 @@ function Base.getindex(A::MatrixMPI{T}, i::Integer, j::Integer) where T
 
     m, n = size(A)
     if i < 1 || i > m
-        _mpi_abort_with_stacktrace("MatrixMPI row index out of bounds: i=$i, nrows=$m")
+        error("MatrixMPI row index out of bounds: i=$i, nrows=$m")
     end
     if j < 1 || j > n
-        _mpi_abort_with_stacktrace("MatrixMPI column index out of bounds: j=$j, ncols=$n")
+        error("MatrixMPI column index out of bounds: j=$j, ncols=$n")
     end
 
     # Find owner of row i using binary search on row_partition
@@ -412,10 +393,10 @@ function Base.setindex!(A::MatrixMPI{T}, val, i::Integer, j::Integer) where T
 
     m, n = size(A)
     if i < 1 || i > m
-        _mpi_abort_with_stacktrace("MatrixMPI row index out of bounds: i=$i, nrows=$m")
+        error("MatrixMPI row index out of bounds: i=$i, nrows=$m")
     end
     if j < 1 || j > n
-        _mpi_abort_with_stacktrace("MatrixMPI column index out of bounds: j=$j, ncols=$n")
+        error("MatrixMPI column index out of bounds: j=$j, ncols=$n")
     end
 
     # Find owner of row i using binary search on row_partition
@@ -498,7 +479,7 @@ function Base.getindex(v::VectorMPI{T}, rng::UnitRange{Int}) where T
 
     n = length(v)
     if first(rng) < 1 || last(rng) > n
-        _mpi_abort_with_stacktrace("VectorMPI range out of bounds: $rng, length=$n")
+        error("VectorMPI range out of bounds: $rng, length=$n")
     end
 
     if isempty(rng)
@@ -560,7 +541,7 @@ function Base.setindex!(v::VectorMPI{T}, val::Number, rng::UnitRange{Int}) where
 
     n = length(v)
     if first(rng) < 1 || last(rng) > n
-        _mpi_abort_with_stacktrace("VectorMPI range out of bounds: $rng, length=$n")
+        error("VectorMPI range out of bounds: $rng, length=$n")
     end
 
     if isempty(rng)
@@ -592,11 +573,11 @@ function Base.setindex!(v::VectorMPI{T}, vals::AbstractVector, rng::UnitRange{In
 
     n = length(v)
     if first(rng) < 1 || last(rng) > n
-        _mpi_abort_with_stacktrace("VectorMPI range out of bounds: $rng, length=$n")
+        error("VectorMPI range out of bounds: $rng, length=$n")
     end
 
     if length(vals) != length(rng)
-        _mpi_abort_with_stacktrace("VectorMPI setindex!: length mismatch, got $(length(vals)) values for range of length $(length(rng))")
+        error("VectorMPI setindex!: length mismatch, got $(length(vals)) values for range of length $(length(rng))")
     end
 
     if isempty(rng)
@@ -649,11 +630,11 @@ function Base.setindex!(v::VectorMPI{T}, src::VectorMPI, rng::UnitRange{Int}) wh
 
     n = length(v)
     if first(rng) < 1 || last(rng) > n
-        _mpi_abort_with_stacktrace("VectorMPI range out of bounds: $rng, length=$n")
+        error("VectorMPI range out of bounds: $rng, length=$n")
     end
 
     if length(src) != length(rng)
-        _mpi_abort_with_stacktrace("VectorMPI setindex!: length mismatch, got $(length(src)) values for range of length $(length(rng))")
+        error("VectorMPI setindex!: length mismatch, got $(length(src)) values for range of length $(length(rng))")
     end
 
     if isempty(rng)
@@ -721,10 +702,10 @@ function Base.getindex(A::MatrixMPI{T}, row_rng::UnitRange{Int}, col_rng::UnitRa
 
     m, n = size(A)
     if first(row_rng) < 1 || last(row_rng) > m
-        _mpi_abort_with_stacktrace("MatrixMPI row range out of bounds: $row_rng, nrows=$m")
+        error("MatrixMPI row range out of bounds: $row_rng, nrows=$m")
     end
     if first(col_rng) < 1 || last(col_rng) > n
-        _mpi_abort_with_stacktrace("MatrixMPI column range out of bounds: $col_rng, ncols=$n")
+        error("MatrixMPI column range out of bounds: $col_rng, ncols=$n")
     end
 
     if isempty(row_rng) || isempty(col_rng)
@@ -801,10 +782,10 @@ function Base.setindex!(A::MatrixMPI{T}, val::Number, row_rng::UnitRange{Int}, c
 
     m, n = size(A)
     if first(row_rng) < 1 || last(row_rng) > m
-        _mpi_abort_with_stacktrace("MatrixMPI row range out of bounds: $row_rng, nrows=$m")
+        error("MatrixMPI row range out of bounds: $row_rng, nrows=$m")
     end
     if first(col_rng) < 1 || last(col_rng) > n
-        _mpi_abort_with_stacktrace("MatrixMPI column range out of bounds: $col_rng, ncols=$n")
+        error("MatrixMPI column range out of bounds: $col_rng, ncols=$n")
     end
 
     if isempty(row_rng) || isempty(col_rng)
@@ -835,14 +816,14 @@ function Base.setindex!(A::MatrixMPI{T}, vals::AbstractMatrix, row_rng::UnitRang
 
     m, n = size(A)
     if first(row_rng) < 1 || last(row_rng) > m
-        _mpi_abort_with_stacktrace("MatrixMPI row range out of bounds: $row_rng, nrows=$m")
+        error("MatrixMPI row range out of bounds: $row_rng, nrows=$m")
     end
     if first(col_rng) < 1 || last(col_rng) > n
-        _mpi_abort_with_stacktrace("MatrixMPI column range out of bounds: $col_rng, ncols=$n")
+        error("MatrixMPI column range out of bounds: $col_rng, ncols=$n")
     end
 
     if size(vals) != (length(row_rng), length(col_rng))
-        _mpi_abort_with_stacktrace("MatrixMPI setindex!: size mismatch, got $(size(vals)) for range of size ($(length(row_rng)), $(length(col_rng)))")
+        error("MatrixMPI setindex!: size mismatch, got $(size(vals)) for range of size ($(length(row_rng)), $(length(col_rng)))")
     end
 
     if isempty(row_rng) || isempty(col_rng)
@@ -895,14 +876,14 @@ function Base.setindex!(A::MatrixMPI{T}, src::MatrixMPI, row_rng::UnitRange{Int}
 
     m, n = size(A)
     if first(row_rng) < 1 || last(row_rng) > m
-        _mpi_abort_with_stacktrace("MatrixMPI row range out of bounds: $row_rng, nrows=$m")
+        error("MatrixMPI row range out of bounds: $row_rng, nrows=$m")
     end
     if first(col_rng) < 1 || last(col_rng) > n
-        _mpi_abort_with_stacktrace("MatrixMPI column range out of bounds: $col_rng, ncols=$n")
+        error("MatrixMPI column range out of bounds: $col_rng, ncols=$n")
     end
 
     if size(src) != (length(row_rng), length(col_rng))
-        _mpi_abort_with_stacktrace("MatrixMPI setindex!: size mismatch, got $(size(src)) for range of size ($(length(row_rng)), $(length(col_rng)))")
+        error("MatrixMPI setindex!: size mismatch, got $(size(src)) for range of size ($(length(row_rng)), $(length(col_rng)))")
     end
 
     if isempty(row_rng) || isempty(col_rng)
@@ -1089,10 +1070,10 @@ function Base.getindex(A::SparseMatrixMPI{T}, row_rng::UnitRange{Int}, col_rng::
 
     m, n = size(A)
     if first(row_rng) < 1 || last(row_rng) > m
-        _mpi_abort_with_stacktrace("SparseMatrixMPI row range out of bounds: $row_rng, nrows=$m")
+        error("SparseMatrixMPI row range out of bounds: $row_rng, nrows=$m")
     end
     if first(col_rng) < 1 || last(col_rng) > n
-        _mpi_abort_with_stacktrace("SparseMatrixMPI column range out of bounds: $col_rng, ncols=$n")
+        error("SparseMatrixMPI column range out of bounds: $col_rng, ncols=$n")
     end
 
     new_nrows = length(row_rng)
@@ -1256,10 +1237,10 @@ function Base.setindex!(A::SparseMatrixMPI{T}, val::Number, row_rng::UnitRange{I
 
     m, n = size(A)
     if first(row_rng) < 1 || last(row_rng) > m
-        _mpi_abort_with_stacktrace("SparseMatrixMPI row range out of bounds: $row_rng, nrows=$m")
+        error("SparseMatrixMPI row range out of bounds: $row_rng, nrows=$m")
     end
     if first(col_rng) < 1 || last(col_rng) > n
-        _mpi_abort_with_stacktrace("SparseMatrixMPI column range out of bounds: $col_rng, ncols=$n")
+        error("SparseMatrixMPI column range out of bounds: $col_rng, ncols=$n")
     end
 
     if isempty(row_rng) || isempty(col_rng)
@@ -1337,14 +1318,14 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::SparseMatrixMPI{T}, row_rng:
 
     m, n = size(A)
     if first(row_rng) < 1 || last(row_rng) > m
-        _mpi_abort_with_stacktrace("SparseMatrixMPI row range out of bounds: $row_rng, nrows=$m")
+        error("SparseMatrixMPI row range out of bounds: $row_rng, nrows=$m")
     end
     if first(col_rng) < 1 || last(col_rng) > n
-        _mpi_abort_with_stacktrace("SparseMatrixMPI column range out of bounds: $col_rng, ncols=$n")
+        error("SparseMatrixMPI column range out of bounds: $col_rng, ncols=$n")
     end
 
     if size(src) != (length(row_rng), length(col_rng))
-        _mpi_abort_with_stacktrace("SparseMatrixMPI setindex!: size mismatch, got $(size(src)) for range of size ($(length(row_rng)), $(length(col_rng)))")
+        error("SparseMatrixMPI setindex!: size mismatch, got $(size(src)) for range of size ($(length(row_rng)), $(length(col_rng)))")
     end
 
     if isempty(row_rng) || isempty(col_rng)
@@ -1673,7 +1654,7 @@ function Base.getindex(v::VectorMPI{T}, idx::VectorMPI{Int}) where T
     # Validate indices (local check - each rank checks its own indices)
     for i in idx.v
         if i < 1 || i > n
-            _mpi_abort_with_stacktrace("VectorMPI index out of bounds: $i, length=$n")
+            error("VectorMPI index out of bounds: $i, length=$n")
         end
     end
 
@@ -1818,7 +1799,7 @@ function Base.getindex(A::MatrixMPI{T}, row_idx::VectorMPI{Int}, col_idx::Vector
     # Validate column indices
     for j in col_indices
         if j < 1 || j > n
-            _mpi_abort_with_stacktrace("MatrixMPI column index out of bounds: $j, ncols=$n")
+            error("MatrixMPI column index out of bounds: $j, ncols=$n")
         end
     end
 
@@ -1835,7 +1816,7 @@ function Base.getindex(A::MatrixMPI{T}, row_idx::VectorMPI{Int}, col_idx::Vector
     # Validate row indices
     for i in my_row_indices
         if i < 1 || i > m
-            _mpi_abort_with_stacktrace("MatrixMPI row index out of bounds: $i, nrows=$m")
+            error("MatrixMPI row index out of bounds: $i, nrows=$m")
         end
     end
 
@@ -1987,7 +1968,7 @@ function Base.getindex(A::SparseMatrixMPI{T}, row_idx::VectorMPI{Int}, col_idx::
     # Validate column indices
     for j in col_indices
         if j < 1 || j > n
-            _mpi_abort_with_stacktrace("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
+            error("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
         end
     end
 
@@ -2010,7 +1991,7 @@ function Base.getindex(A::SparseMatrixMPI{T}, row_idx::VectorMPI{Int}, col_idx::
     # Validate row indices
     for i in my_row_indices
         if i < 1 || i > m
-            _mpi_abort_with_stacktrace("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
+            error("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
         end
     end
 
@@ -2138,8 +2119,8 @@ function Base.getindex(A::SparseMatrixMPI{T}, row_idx::VectorMPI{Int}, col_idx::
     return MatrixMPI{T}(hash, result_row_partition, result_col_partition, result_A)
 end
 
-# Helper function to gather a VectorMPI{Int} to all ranks
-function _gather_vector_to_all(v::VectorMPI{Int}, comm::MPI.Comm)
+# Helper function to gather a VectorMPI to all ranks (generic version for any element type)
+function _gather_vector_to_all(v::VectorMPI{T}, comm::MPI.Comm) where T
     rank = MPI.Comm_rank(comm)
     nranks = MPI.Comm_size(comm)
 
@@ -2156,7 +2137,7 @@ function _gather_vector_to_all(v::VectorMPI{Int}, comm::MPI.Comm)
     end
 
     total = sum(counts)
-    result = Vector{Int}(undef, total)
+    result = Vector{T}(undef, total)
 
     # Allgatherv
     MPI.Allgatherv!(v.v, MPI.VBuffer(result, counts, displs), comm)
@@ -2198,13 +2179,13 @@ function Base.setindex!(v::VectorMPI{T}, src::VectorMPI{T}, idx::VectorMPI{Int})
 
     # Validate that src and idx have the same partition
     if src.partition != idx.partition
-        _mpi_abort_with_stacktrace("VectorMPI setindex!: src and idx must have the same partition")
+        error("VectorMPI setindex!: src and idx must have the same partition")
     end
 
     # Validate indices (local check)
     for i in idx.v
         if i < 1 || i > n
-            _mpi_abort_with_stacktrace("VectorMPI index out of bounds: $i, length=$n")
+            error("VectorMPI index out of bounds: $i, length=$n")
         end
     end
 
@@ -2345,25 +2326,25 @@ function Base.setindex!(A::MatrixMPI{T}, src::MatrixMPI{T}, row_idx::VectorMPI{I
 
     # Validate dimensions
     if size(src) != (length(row_idx), ncols_src)
-        _mpi_abort_with_stacktrace("MatrixMPI setindex!: src size $(size(src)) doesn't match index dimensions ($(length(row_idx)), $ncols_src)")
+        error("MatrixMPI setindex!: src size $(size(src)) doesn't match index dimensions ($(length(row_idx)), $ncols_src)")
     end
 
     # Validate that src row partition matches row_idx partition
     if src.row_partition != row_idx.partition
-        _mpi_abort_with_stacktrace("MatrixMPI setindex!: src row partition must match row_idx partition")
+        error("MatrixMPI setindex!: src row partition must match row_idx partition")
     end
 
     # Validate column indices
     for j in col_indices
         if j < 1 || j > n
-            _mpi_abort_with_stacktrace("MatrixMPI column index out of bounds: $j, ncols=$n")
+            error("MatrixMPI column index out of bounds: $j, ncols=$n")
         end
     end
 
     # Validate row indices (local check)
     for i in row_idx.v
         if i < 1 || i > m
-            _mpi_abort_with_stacktrace("MatrixMPI row index out of bounds: $i, nrows=$m")
+            error("MatrixMPI row index out of bounds: $i, nrows=$m")
         end
     end
 
@@ -2512,25 +2493,25 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_idx::Vecto
 
     # Validate dimensions
     if size(src) != (length(row_idx), ncols_src)
-        _mpi_abort_with_stacktrace("SparseMatrixMPI setindex!: src size $(size(src)) doesn't match index dimensions ($(length(row_idx)), $ncols_src)")
+        error("SparseMatrixMPI setindex!: src size $(size(src)) doesn't match index dimensions ($(length(row_idx)), $ncols_src)")
     end
 
     # Validate that src row partition matches row_idx partition
     if src.row_partition != row_idx.partition
-        _mpi_abort_with_stacktrace("SparseMatrixMPI setindex!: src row partition must match row_idx partition")
+        error("SparseMatrixMPI setindex!: src row partition must match row_idx partition")
     end
 
     # Validate column indices
     for j in col_indices
         if j < 1 || j > n
-            _mpi_abort_with_stacktrace("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
+            error("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
         end
     end
 
     # Validate row indices (local check)
     for i in row_idx.v
         if i < 1 || i > m
-            _mpi_abort_with_stacktrace("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
+            error("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
         end
     end
 
@@ -2684,13 +2665,13 @@ function Base.getindex(A::MatrixMPI{T}, row_idx::VectorMPI{Int}, col_rng::UnitRa
 
     # Validate column range
     if first(col_rng) < 1 || last(col_rng) > n
-        _mpi_abort_with_stacktrace("MatrixMPI column range out of bounds: $col_rng, ncols=$n")
+        error("MatrixMPI column range out of bounds: $col_rng, ncols=$n")
     end
 
     # Validate row indices (local check)
     for i in row_idx.v
         if i < 1 || i > m
-            _mpi_abort_with_stacktrace("MatrixMPI row index out of bounds: $i, nrows=$m")
+            error("MatrixMPI row index out of bounds: $i, nrows=$m")
         end
     end
 
@@ -2817,7 +2798,7 @@ function Base.getindex(A::MatrixMPI{T}, row_rng::UnitRange{Int}, col_idx::Vector
 
     # Validate row range
     if first(row_rng) < 1 || last(row_rng) > m
-        _mpi_abort_with_stacktrace("MatrixMPI row range out of bounds: $row_rng, nrows=$m")
+        error("MatrixMPI row range out of bounds: $row_rng, nrows=$m")
     end
 
     # Gather col_idx to all ranks (columns are not distributed)
@@ -2827,7 +2808,7 @@ function Base.getindex(A::MatrixMPI{T}, row_rng::UnitRange{Int}, col_idx::Vector
     # Validate column indices
     for j in col_indices
         if j < 1 || j > n
-            _mpi_abort_with_stacktrace("MatrixMPI column index out of bounds: $j, ncols=$n")
+            error("MatrixMPI column index out of bounds: $j, ncols=$n")
         end
     end
 
@@ -2970,13 +2951,13 @@ function Base.getindex(A::MatrixMPI{T}, row_idx::VectorMPI{Int}, j::Int) where T
 
     # Validate column
     if j < 1 || j > n
-        _mpi_abort_with_stacktrace("MatrixMPI column index out of bounds: $j, ncols=$n")
+        error("MatrixMPI column index out of bounds: $j, ncols=$n")
     end
 
     # Validate row indices
     for i in row_idx.v
         if i < 1 || i > m
-            _mpi_abort_with_stacktrace("MatrixMPI row index out of bounds: $i, nrows=$m")
+            error("MatrixMPI row index out of bounds: $i, nrows=$m")
         end
     end
 
@@ -3093,7 +3074,7 @@ function Base.getindex(A::MatrixMPI{T}, i::Int, col_idx::VectorMPI{Int}) where T
 
     # Validate row
     if i < 1 || i > m
-        _mpi_abort_with_stacktrace("MatrixMPI row index out of bounds: $i, nrows=$m")
+        error("MatrixMPI row index out of bounds: $i, nrows=$m")
     end
 
     # Gather col_idx to all ranks
@@ -3102,7 +3083,7 @@ function Base.getindex(A::MatrixMPI{T}, i::Int, col_idx::VectorMPI{Int}) where T
     # Validate column indices
     for j in col_indices
         if j < 1 || j > n
-            _mpi_abort_with_stacktrace("MatrixMPI column index out of bounds: $j, ncols=$n")
+            error("MatrixMPI column index out of bounds: $j, ncols=$n")
         end
     end
 
@@ -3155,13 +3136,13 @@ function Base.getindex(A::SparseMatrixMPI{T}, row_idx::VectorMPI{Int}, col_rng::
 
     # Validate column range
     if first(col_rng) < 1 || last(col_rng) > n
-        _mpi_abort_with_stacktrace("SparseMatrixMPI column range out of bounds: $col_rng, ncols=$n")
+        error("SparseMatrixMPI column range out of bounds: $col_rng, ncols=$n")
     end
 
     # Validate row indices
     for i in row_idx.v
         if i < 1 || i > m
-            _mpi_abort_with_stacktrace("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
+            error("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
         end
     end
 
@@ -3300,7 +3281,7 @@ function Base.getindex(A::SparseMatrixMPI{T}, row_rng::UnitRange{Int}, col_idx::
 
     # Validate row range
     if first(row_rng) < 1 || last(row_rng) > m
-        _mpi_abort_with_stacktrace("SparseMatrixMPI row range out of bounds: $row_rng, nrows=$m")
+        error("SparseMatrixMPI row range out of bounds: $row_rng, nrows=$m")
     end
 
     # Gather col_idx to all ranks
@@ -3310,7 +3291,7 @@ function Base.getindex(A::SparseMatrixMPI{T}, row_rng::UnitRange{Int}, col_idx::
     # Validate column indices
     for j in col_indices_result
         if j < 1 || j > n
-            _mpi_abort_with_stacktrace("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
+            error("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
         end
     end
 
@@ -3464,11 +3445,11 @@ function Base.getindex(A::SparseMatrixMPI{T}, row_idx::VectorMPI{Int}, j::Int) w
 
     # Validate
     if j < 1 || j > n
-        _mpi_abort_with_stacktrace("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
+        error("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
     end
     for i in row_idx.v
         if i < 1 || i > m
-            _mpi_abort_with_stacktrace("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
+            error("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
         end
     end
 
@@ -3591,7 +3572,7 @@ function Base.getindex(A::SparseMatrixMPI{T}, i::Int, col_idx::VectorMPI{Int}) w
 
     # Validate
     if i < 1 || i > m
-        _mpi_abort_with_stacktrace("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
+        error("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
     end
 
     # Gather col_idx
@@ -3599,7 +3580,7 @@ function Base.getindex(A::SparseMatrixMPI{T}, i::Int, col_idx::VectorMPI{Int}) w
 
     for j in col_indices_result
         if j < 1 || j > n
-            _mpi_abort_with_stacktrace("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
+            error("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
         end
     end
 
@@ -3663,21 +3644,21 @@ function Base.setindex!(A::MatrixMPI{T}, src::MatrixMPI{T}, row_idx::VectorMPI{I
 
     # Validate column range
     if first(col_rng) < 1 || last(col_rng) > n
-        _mpi_abort_with_stacktrace("MatrixMPI column range out of bounds: $col_rng, ncols=$n")
+        error("MatrixMPI column range out of bounds: $col_rng, ncols=$n")
     end
 
     # Validate src dimensions
     if size(src, 2) != ncols_src
-        _mpi_abort_with_stacktrace("MatrixMPI setindex!: src columns ($(size(src, 2))) must match range length ($ncols_src)")
+        error("MatrixMPI setindex!: src columns ($(size(src, 2))) must match range length ($ncols_src)")
     end
     if src.row_partition != row_idx.partition
-        _mpi_abort_with_stacktrace("MatrixMPI setindex!: src row partition must match row_idx partition")
+        error("MatrixMPI setindex!: src row partition must match row_idx partition")
     end
 
     # Validate row indices (local check)
     for i in row_idx.v
         if i < 1 || i > m
-            _mpi_abort_with_stacktrace("MatrixMPI row index out of bounds: $i, nrows=$m")
+            error("MatrixMPI row index out of bounds: $i, nrows=$m")
         end
     end
 
@@ -3808,7 +3789,7 @@ function Base.setindex!(A::MatrixMPI{T}, src::MatrixMPI{T}, row_rng::UnitRange{I
 
     # Validate row range
     if first(row_rng) < 1 || last(row_rng) > m
-        _mpi_abort_with_stacktrace("MatrixMPI row range out of bounds: $row_rng, nrows=$m")
+        error("MatrixMPI row range out of bounds: $row_rng, nrows=$m")
     end
 
     # Gather col_idx to all ranks (columns are not distributed)
@@ -3818,13 +3799,13 @@ function Base.setindex!(A::MatrixMPI{T}, src::MatrixMPI{T}, row_rng::UnitRange{I
     # Validate column indices
     for j in col_indices
         if j < 1 || j > n
-            _mpi_abort_with_stacktrace("MatrixMPI column index out of bounds: $j, ncols=$n")
+            error("MatrixMPI column index out of bounds: $j, ncols=$n")
         end
     end
 
     # Validate src dimensions
     if size(src, 1) != nrows_src || size(src, 2) != ncols_src
-        _mpi_abort_with_stacktrace("MatrixMPI setindex!: src size ($(size(src))) must match ($nrows_src, $ncols_src)")
+        error("MatrixMPI setindex!: src size ($(size(src))) must match ($nrows_src, $ncols_src)")
     end
 
     # Compute which rows of src I own vs which rows of A's row_rng I own
@@ -3964,18 +3945,18 @@ function Base.setindex!(A::MatrixMPI{T}, src::VectorMPI{T}, row_idx::VectorMPI{I
 
     # Validate column index
     if j < 1 || j > n
-        _mpi_abort_with_stacktrace("MatrixMPI column index out of bounds: $j, ncols=$n")
+        error("MatrixMPI column index out of bounds: $j, ncols=$n")
     end
 
     # Validate partitions match
     if src.partition != row_idx.partition
-        _mpi_abort_with_stacktrace("MatrixMPI setindex!: src partition must match row_idx partition")
+        error("MatrixMPI setindex!: src partition must match row_idx partition")
     end
 
     # Validate row indices (local check)
     for i in row_idx.v
         if i < 1 || i > m
-            _mpi_abort_with_stacktrace("MatrixMPI row index out of bounds: $i, nrows=$m")
+            error("MatrixMPI row index out of bounds: $i, nrows=$m")
         end
     end
 
@@ -4090,18 +4071,18 @@ function Base.setindex!(A::MatrixMPI{T}, src::VectorMPI{T}, i::Integer, col_idx:
 
     # Validate row index
     if i < 1 || i > m
-        _mpi_abort_with_stacktrace("MatrixMPI row index out of bounds: $i, nrows=$m")
+        error("MatrixMPI row index out of bounds: $i, nrows=$m")
     end
 
     # Validate partitions match
     if src.partition != col_idx.partition
-        _mpi_abort_with_stacktrace("MatrixMPI setindex!: src partition must match col_idx partition")
+        error("MatrixMPI setindex!: src partition must match col_idx partition")
     end
 
     # Validate column indices (local check)
     for j in col_idx.v
         if j < 1 || j > n
-            _mpi_abort_with_stacktrace("MatrixMPI column index out of bounds: $j, ncols=$n")
+            error("MatrixMPI column index out of bounds: $j, ncols=$n")
         end
     end
 
@@ -4148,21 +4129,21 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_idx::Vecto
 
     # Validate column range
     if first(col_rng) < 1 || last(col_rng) > n
-        _mpi_abort_with_stacktrace("SparseMatrixMPI column range out of bounds: $col_rng, ncols=$n")
+        error("SparseMatrixMPI column range out of bounds: $col_rng, ncols=$n")
     end
 
     # Validate src dimensions
     if size(src, 2) != ncols_src
-        _mpi_abort_with_stacktrace("SparseMatrixMPI setindex!: src columns ($(size(src, 2))) must match range length ($ncols_src)")
+        error("SparseMatrixMPI setindex!: src columns ($(size(src, 2))) must match range length ($ncols_src)")
     end
     if src.row_partition != row_idx.partition
-        _mpi_abort_with_stacktrace("SparseMatrixMPI setindex!: src row partition must match row_idx partition")
+        error("SparseMatrixMPI setindex!: src row partition must match row_idx partition")
     end
 
     # Validate row indices (local check)
     for i in row_idx.v
         if i < 1 || i > m
-            _mpi_abort_with_stacktrace("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
+            error("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
         end
     end
 
@@ -4321,7 +4302,7 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_rng::UnitR
 
     # Validate row range
     if first(row_rng) < 1 || last(row_rng) > m
-        _mpi_abort_with_stacktrace("SparseMatrixMPI row range out of bounds: $row_rng, nrows=$m")
+        error("SparseMatrixMPI row range out of bounds: $row_rng, nrows=$m")
     end
 
     # Gather col_idx to all ranks (columns are not distributed)
@@ -4331,13 +4312,13 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_rng::UnitR
     # Validate column indices
     for j in col_indices
         if j < 1 || j > n
-            _mpi_abort_with_stacktrace("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
+            error("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
         end
     end
 
     # Validate src dimensions
     if size(src, 1) != nrows_src || size(src, 2) != ncols_src
-        _mpi_abort_with_stacktrace("SparseMatrixMPI setindex!: src size ($(size(src))) must match ($nrows_src, $ncols_src)")
+        error("SparseMatrixMPI setindex!: src size ($(size(src))) must match ($nrows_src, $ncols_src)")
     end
 
     # Save old hash for cache invalidation
@@ -4498,18 +4479,18 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::VectorMPI{T}, row_idx::Vecto
 
     # Validate column index
     if j < 1 || j > n
-        _mpi_abort_with_stacktrace("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
+        error("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
     end
 
     # Validate partitions match
     if src.partition != row_idx.partition
-        _mpi_abort_with_stacktrace("SparseMatrixMPI setindex!: src partition must match row_idx partition")
+        error("SparseMatrixMPI setindex!: src partition must match row_idx partition")
     end
 
     # Validate row indices (local check)
     for i in row_idx.v
         if i < 1 || i > m
-            _mpi_abort_with_stacktrace("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
+            error("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
         end
     end
 
@@ -4647,18 +4628,18 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::VectorMPI{T}, i::Integer, co
 
     # Validate row index
     if i < 1 || i > m
-        _mpi_abort_with_stacktrace("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
+        error("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
     end
 
     # Validate partitions match
     if src.partition != col_idx.partition
-        _mpi_abort_with_stacktrace("SparseMatrixMPI setindex!: src partition must match col_idx partition")
+        error("SparseMatrixMPI setindex!: src partition must match col_idx partition")
     end
 
     # Validate column indices (local check)
     for j in col_idx.v
         if j < 1 || j > n
-            _mpi_abort_with_stacktrace("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
+            error("SparseMatrixMPI column index out of bounds: $j, ncols=$n")
         end
     end
 
