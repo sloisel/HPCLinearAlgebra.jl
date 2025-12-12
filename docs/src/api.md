@@ -345,6 +345,12 @@ For `setindex!` operations, the source type depends on the indexing pattern:
 
 ## Utility Functions
 
+### Partition Computation
+
+```@docs
+uniform_partition
+```
+
 ### Rank-Selective Output
 
 ```@docs
