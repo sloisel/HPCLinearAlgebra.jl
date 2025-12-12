@@ -206,7 +206,7 @@ which would cause excessive allocations in matrix operations.
 Access the underlying CSC via `A.parent` when needed for low-level operations.
 """
 mutable struct SparseMatrixMPI{T}
-    structural_hash::Blake3Hash
+    structural_hash::OptionalBlake3Hash
     row_partition::Vector{Int}
     col_partition::Vector{Int}
     col_indices::Vector{Int}
@@ -260,11 +260,8 @@ function SparseMatrixMPI{T}(A::SparseMatrixCSC{T,Int};
     compressed_AT = compress_AT(AT_storage, col_indices)
     A_local = transpose(compressed_AT)  # Transpose wrapper for type clarity
 
-    # Compute structural hash (identical across all ranks)
-    structural_hash = compute_structural_hash(row_partition, col_indices, compressed_AT, comm)
-
-    return SparseMatrixMPI{T}(structural_hash, row_partition, col_partition, col_indices, A_local,
-        nothing)
+    # Structural hash computed lazily on first use via _ensure_hash
+    return SparseMatrixMPI{T}(nothing, row_partition, col_partition, col_indices, A_local, nothing)
 end
 
 """
@@ -337,11 +334,8 @@ function SparseMatrixMPI_local(A_local::Transpose{T,SparseMatrixCSC{T,Int}};
     compressed_AT = compress_AT(AT_local, col_indices)
     A_compressed = transpose(compressed_AT)  # Transpose wrapper for type clarity
 
-    # Compute structural hash (identical across all ranks)
-    structural_hash = compute_structural_hash(row_partition, col_indices, compressed_AT, comm)
-
-    return SparseMatrixMPI{T}(structural_hash, row_partition, col_partition, col_indices, A_compressed,
-        nothing)
+    # Structural hash computed lazily on first use via _ensure_hash
+    return SparseMatrixMPI{T}(nothing, row_partition, col_partition, col_indices, A_compressed, nothing)
 end
 
 # Adjoint version: conjugate values during construction
@@ -664,7 +658,7 @@ Create a memoized communication plan for A * B.
 The plan is cached based on the structural hashes of A and B.
 """
 function MatrixPlan(A::SparseMatrixMPI{T}, B::SparseMatrixMPI{T}) where T
-    key = (A.structural_hash, B.structural_hash, T)
+    key = (_ensure_hash(A), _ensure_hash(B), T)
     if haskey(_plan_cache, key)
         return _plan_cache[key]::MatrixPlan{T}
     end
@@ -771,7 +765,7 @@ Used for A + B or A - B operations.
 """
 function get_addition_plan(A::SparseMatrixMPI{T}, B::SparseMatrixMPI{T}) where T
     # Cache key: A's structural hash (determines row partition) + B's structural hash
-    key = (A.structural_hash, B.structural_hash, T)
+    key = (_ensure_hash(A), _ensure_hash(B), T)
     if haskey(_addition_plan_cache, key)
         return _addition_plan_cache[key]::MatrixPlan{T}
     end
@@ -1302,7 +1296,7 @@ Get a memoized VectorPlan for A * x.
 The plan is cached based on the structural hashes of A and x.
 """
 function get_vector_plan(A::SparseMatrixMPI{T}, x::VectorMPI{T}) where T
-    key = (A.structural_hash, x.structural_hash, T)
+    key = (_ensure_hash(A), x.structural_hash, T)
     if haskey(_vector_plan_cache, key)
         return _vector_plan_cache[key]::VectorPlan{T}
     end

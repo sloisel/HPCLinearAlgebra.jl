@@ -260,9 +260,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, val, i::Integer, j::Integer) wher
     # Check if this rank owns the row - if not, we only participate in collective ops
     i_own_row = (rank == owner)
 
-    # Save old hash for cache invalidation
-    old_hash = A.structural_hash
-
     # Step 1: Try non-structural modification first (fast path)
     # Check if this rank's modification is non-structural
     needs_structural = false
@@ -307,9 +304,8 @@ function Base.setindex!(A::SparseMatrixMPI{T}, val, i::Integer, j::Integer) wher
         A.A = transpose(new_AT)
     end
 
-    # Step 4: Recompute structural hash (collective)
-    new_hash = compute_structural_hash(A.row_partition, A.col_indices, A.A.parent, comm)
-    A.structural_hash = new_hash
+    # Step 4: Invalidate structural hash (will be recomputed lazily on next use)
+    A.structural_hash = nothing
 
     # Step 5: Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
@@ -1330,9 +1326,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::SparseMatrixMPI{T}, row_rng:
         return src
     end
 
-    # Save old hash for cache invalidation
-    old_hash = A.structural_hash
-
     # Compute my owned row intersection with row_rng
     my_row_start = A.row_partition[rank + 1]
     my_row_end = A.row_partition[rank + 2] - 1
@@ -1588,9 +1581,8 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::SparseMatrixMPI{T}, row_rng:
         A.A = transpose(new_AT)
     end
 
-    # Recompute structural hash (collective)
-    new_hash = compute_structural_hash(A.row_partition, A.col_indices, A.A.parent, comm)
-    A.structural_hash = new_hash
+    # Invalidate structural hash (will be recomputed lazily on next use)
+    A.structural_hash = nothing
 
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
@@ -2509,9 +2501,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_idx::Vecto
         end
     end
 
-    # Save old hash for cache invalidation
-    old_hash = A.structural_hash
-
     # My local row indices and corresponding src rows
     local_row_idx = row_idx.v
     n_local_rows = length(local_row_idx)
@@ -2626,9 +2615,8 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_idx::Vecto
         A.A = transpose(new_AT)
     end
 
-    # Recompute structural hash (collective)
-    new_hash = compute_structural_hash(A.row_partition, A.col_indices, A.A.parent, comm)
-    A.structural_hash = new_hash
+    # Invalidate structural hash (will be recomputed lazily on next use)
+    A.structural_hash = nothing
 
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
@@ -4138,9 +4126,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_idx::Vecto
         end
     end
 
-    # Save old hash for cache invalidation
-    old_hash = A.structural_hash
-
     local_row_indices = row_idx.v
     n_local_src_rows = length(local_row_indices)
 
@@ -4254,9 +4239,8 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_idx::Vecto
         A.A = transpose(new_AT)
     end
 
-    # Recompute structural hash (collective)
-    new_hash = compute_structural_hash(A.row_partition, A.col_indices, A.A.parent, comm)
-    A.structural_hash = new_hash
+    # Invalidate structural hash (will be recomputed lazily on next use)
+    A.structural_hash = nothing
 
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
@@ -4308,9 +4292,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_rng::UnitR
     if size(src, 1) != nrows_src || size(src, 2) != ncols_src
         error("SparseMatrixMPI setindex!: src size ($(size(src))) must match ($nrows_src, $ncols_src)")
     end
-
-    # Save old hash for cache invalidation
-    old_hash = A.structural_hash
 
     # Compute which rows of src I own vs which rows of A's row_rng I own
     src_partition = src.row_partition
@@ -4428,9 +4409,8 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_rng::UnitR
         A.A = transpose(new_AT)
     end
 
-    # Recompute structural hash (collective)
-    new_hash = compute_structural_hash(A.row_partition, A.col_indices, A.A.parent, comm)
-    A.structural_hash = new_hash
+    # Invalidate structural hash (will be recomputed lazily on next use)
+    A.structural_hash = nothing
 
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
@@ -4478,9 +4458,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::VectorMPI{T}, row_idx::Vecto
             error("SparseMatrixMPI row index out of bounds: $i, nrows=$m")
         end
     end
-
-    # Save old hash for cache invalidation
-    old_hash = A.structural_hash
 
     local_row_indices = row_idx.v
     local_src = src.v
@@ -4584,9 +4561,8 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::VectorMPI{T}, row_idx::Vecto
         A.A = transpose(new_AT)
     end
 
-    # Recompute structural hash (collective)
-    new_hash = compute_structural_hash(A.row_partition, A.col_indices, A.A.parent, comm)
-    A.structural_hash = new_hash
+    # Invalidate structural hash (will be recomputed lazily on next use)
+    A.structural_hash = nothing
 
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
@@ -4625,9 +4601,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::VectorMPI{T}, i::Integer, co
         end
     end
 
-    # Save old hash for cache invalidation
-    old_hash = A.structural_hash
-
     # Find owner of row i
     owner = searchsortedlast(A.row_partition, i) - 1
     if owner >= nranks
@@ -4655,9 +4628,8 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::VectorMPI{T}, i::Integer, co
         end
     end
 
-    # Recompute structural hash (collective)
-    new_hash = compute_structural_hash(A.row_partition, A.col_indices, A.A.parent, comm)
-    A.structural_hash = new_hash
+    # Invalidate structural hash (will be recomputed lazily on next use)
+    A.structural_hash = nothing
 
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)

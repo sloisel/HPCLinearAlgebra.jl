@@ -14,6 +14,7 @@ export io0   # Utility for rank-selective output
 
 # Type alias for 256-bit Blake3 hash
 const Blake3Hash = NTuple{32,UInt8}
+const OptionalBlake3Hash = Union{Nothing, Blake3Hash}
 
 # Cache for memoized MatrixPlans
 # Key: (A_hash, B_hash, T) - use full 256-bit hashes
@@ -98,6 +99,42 @@ include("dense.jl")
 include("sparse.jl")
 include("blocks.jl")
 include("indexing.jl")
+
+# ============================================================================
+# Lazy Hash Computation
+# ============================================================================
+
+"""
+    _ensure_hash(A::SparseMatrixMPI{T}) -> Blake3Hash
+
+Ensure that the structural hash is computed. If `A.structural_hash` is `nothing`,
+compute it and cache it in the struct. Returns the hash.
+
+Note: This function calls `compute_structural_hash` which uses MPI.Allgather,
+so all ranks must call this together.
+"""
+function _ensure_hash(A::SparseMatrixMPI{T})::Blake3Hash where T
+    if A.structural_hash === nothing
+        A.structural_hash = compute_structural_hash(A.row_partition, A.col_indices, A.A.parent, MPI.COMM_WORLD)
+    end
+    return A.structural_hash
+end
+
+"""
+    _ensure_hash(A::MatrixMPI{T}) -> Blake3Hash
+
+Ensure that the structural hash is computed. If `A.structural_hash` is `nothing`,
+compute it and cache it in the struct. Returns the hash.
+
+Note: This function calls `compute_dense_structural_hash` which uses MPI.Allgather,
+so all ranks must call this together.
+"""
+function _ensure_hash(A::MatrixMPI{T})::Blake3Hash where T
+    if A.structural_hash === nothing
+        A.structural_hash = compute_dense_structural_hash(A.row_partition, A.col_partition, size(A.A), MPI.COMM_WORLD)
+    end
+    return A.structural_hash
+end
 
 # ============================================================================
 # Utility Functions

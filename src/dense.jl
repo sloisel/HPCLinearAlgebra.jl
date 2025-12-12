@@ -45,8 +45,8 @@ A distributed dense matrix partitioned by rows across MPI ranks.
 - `size(A, 1) == row_partition[rank+2] - row_partition[rank+1]`
 - `size(A, 2) == col_partition[end] - 1`
 """
-struct MatrixMPI{T}
-    structural_hash::Blake3Hash
+mutable struct MatrixMPI{T}
+    structural_hash::OptionalBlake3Hash
     row_partition::Vector{Int}
     col_partition::Vector{Int}
     A::Matrix{T}
@@ -104,10 +104,8 @@ function MatrixMPI_local(A_local::Matrix{T};
         row_partition[r+1] = row_partition[r] + all_row_counts[r]
     end
 
-    # Compute structural hash
-    structural_hash = compute_dense_structural_hash(row_partition, col_partition, size(A_local), comm)
-
-    return MatrixMPI{T}(structural_hash, row_partition, col_partition, copy(A_local))
+    # Structural hash computed lazily on first use via _ensure_hash
+    return MatrixMPI{T}(nothing, row_partition, col_partition, copy(A_local))
 end
 
 """
@@ -141,10 +139,8 @@ function MatrixMPI(M::Matrix{T};
     # Extract local rows from M (NOT transposed, unlike SparseMatrixMPI)
     A = M[row_start:row_end, :]
 
-    # Compute structural hash (identical across all ranks)
-    structural_hash = compute_dense_structural_hash(row_partition, col_partition, size(A), comm)
-
-    return MatrixMPI{T}(structural_hash, row_partition, col_partition, A)
+    # Structural hash computed lazily on first use via _ensure_hash
+    return MatrixMPI{T}(nothing, row_partition, col_partition, A)
 end
 
 # ============================================================================
@@ -507,7 +503,7 @@ Get a memoized DenseMatrixVectorPlan for A * x.
 The plan is cached based on the structural hashes of A and x.
 """
 function get_dense_vector_plan(A::MatrixMPI{T}, x::VectorMPI{T}) where T
-    key = (A.structural_hash, x.structural_hash, T)
+    key = (_ensure_hash(A), x.structural_hash, T)
     if haskey(_dense_vector_plan_cache, key)
         return _dense_vector_plan_cache[key]::DenseMatrixVectorPlan{T}
     end
@@ -808,7 +804,7 @@ Get a memoized DenseTransposePlan for A^T.
 The plan is cached based on the structural hash of A and the element type.
 """
 function get_dense_transpose_plan(A::MatrixMPI{T}) where T
-    key = (A.structural_hash, T)
+    key = (_ensure_hash(A), T)
     if haskey(_dense_transpose_plan_cache, key)
         return _dense_transpose_plan_cache[key]::DenseTransposePlan{T}
     end
@@ -1053,7 +1049,7 @@ end
 Get a memoized DenseTransposeVectorPlan for transpose(A) * x.
 """
 function get_dense_transpose_vector_plan(A::MatrixMPI{T}, x::VectorMPI{T}) where T
-    key = (A.structural_hash, x.structural_hash, T)
+    key = (_ensure_hash(A), x.structural_hash, T)
     if haskey(_dense_transpose_vector_plan_cache, key)
         return _dense_transpose_vector_plan_cache[key]::DenseTransposeVectorPlan{T}
     end
