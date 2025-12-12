@@ -314,9 +314,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, val, i::Integer, j::Integer) wher
     # Step 5: Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
 
-    # Step 6: Invalidate plan caches for the old hash
-    _invalidate_plans_for_hash!(old_hash)
-
     return val
 end
 
@@ -1598,9 +1595,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::SparseMatrixMPI{T}, row_rng:
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
 
-    # Invalidate plan caches for the old hash
-    _invalidate_plans_for_hash!(old_hash)
-
     return src
 end
 
@@ -2638,9 +2632,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_idx::Vecto
 
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
-
-    # Invalidate plan caches for the old hash
-    _invalidate_plans_for_hash!(old_hash)
 
     return src
 end
@@ -4270,9 +4261,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_idx::Vecto
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
 
-    # Invalidate plan caches for the old hash
-    _invalidate_plans_for_hash!(old_hash)
-
     MPI.Barrier(comm)
     return src
 end
@@ -4447,9 +4435,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_rng::UnitR
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
 
-    # Invalidate plan caches for the old hash
-    _invalidate_plans_for_hash!(old_hash)
-
     MPI.Barrier(comm)
     return src
 end
@@ -4606,9 +4591,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::VectorMPI{T}, row_idx::Vecto
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
 
-    # Invalidate plan caches for the old hash
-    _invalidate_plans_for_hash!(old_hash)
-
     MPI.Barrier(comm)
     return src
 end
@@ -4679,9 +4661,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::VectorMPI{T}, i::Integer, co
 
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
-
-    # Invalidate plan caches for the old hash
-    _invalidate_plans_for_hash!(old_hash)
 
     MPI.Barrier(comm)
     return src
