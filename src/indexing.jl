@@ -110,38 +110,6 @@ end
 # ============================================================================
 
 """
-    _find_csc_entry(AT::SparseMatrixCSC, local_row::Int, local_col::Int)
-
-Find the position of entry (local_row, local_col) in a CSC matrix.
-Returns the nzval index if found, or 0 if the entry is structurally zero.
-
-Uses binary search since rowval entries within each column are sorted.
-Note: local_row is the row index in the CSC (which corresponds to local column index
-in the compressed col_indices), and local_col is the column in CSC (which corresponds
-to local row index in the original matrix).
-"""
-function _find_csc_entry(AT::SparseMatrixCSC, local_row::Int, local_col::Int)
-    # Get the range of entries for this column
-    col_start = AT.colptr[local_col]
-    col_end = AT.colptr[local_col + 1] - 1
-
-    if col_start > col_end
-        return 0  # Empty column
-    end
-
-    # Binary search for local_row in rowval[col_start:col_end]
-    # Note: searchsortedfirst returns first index >= target
-    rowval_view = view(AT.rowval, col_start:col_end)
-    idx = searchsortedfirst(rowval_view, local_row)
-
-    if idx <= length(rowval_view) && rowval_view[idx] == local_row
-        return col_start + idx - 1  # Convert back to absolute index
-    end
-
-    return 0  # Entry not found (structural zero)
-end
-
-"""
     Base.getindex(A::SparseMatrixMPI{T}, i::Integer, j::Integer) where T
 
 Get element `A[i, j]` from a distributed sparse matrix.
@@ -189,14 +157,9 @@ function Base.getindex(A::SparseMatrixMPI{T}, i::Integer, j::Integer) where T
         local_col_idx = searchsortedfirst(A.col_indices, j)
 
         if local_col_idx <= length(A.col_indices) && A.col_indices[local_col_idx] == j
-            # Column j exists in our sparsity pattern
-            # In AT: rows are compressed col_indices, columns are local rows
-            nzval_idx = _find_csc_entry(AT, local_col_idx, local_row)
-            if nzval_idx > 0
-                buf[1] = AT.nzval[nzval_idx]
-            else
-                buf[1] = zero(T)  # Structural zero (column exists but not in this row)
-            end
+            # Column j exists in our sparsity pattern - use direct CSC indexing
+            # AT[row, col] returns 0 for structural zeros automatically
+            buf[1] = AT[local_col_idx, local_row]
         else
             buf[1] = zero(T)  # Column j not in our sparsity pattern at all
         end
@@ -260,39 +223,33 @@ function Base.setindex!(A::SparseMatrixMPI{T}, val, i::Integer, j::Integer) wher
     # Check if this rank owns the row - if not, we only participate in collective ops
     i_own_row = (rank == owner)
 
-    # Step 1: Try non-structural modification first (fast path)
-    # Check if this rank's modification is non-structural
-    needs_structural = false
+    # Check if column j exists in col_indices (determines if we need structural rebuild)
+    needs_col_expansion = false
     if i_own_row
         local_row = i - A.row_partition[owner + 1] + 1
         AT = A.A.parent
 
         local_col_idx = searchsortedfirst(A.col_indices, j)
         if local_col_idx <= length(A.col_indices) && A.col_indices[local_col_idx] == j
-            nzval_idx = _find_csc_entry(AT, local_col_idx, local_row)
-            if nzval_idx > 0
-                # Entry exists - can do simple value update
-                AT.nzval[nzval_idx] = convert(T, val)
-            else
-                needs_structural = true
-            end
+            # Column exists - SparseMatrixCSC handles both existing and new entries
+            AT[local_col_idx, local_row] = convert(T, val)
         else
-            needs_structural = true
+            # New column needed - requires expanding col_indices
+            needs_col_expansion = true
         end
     end
 
-    # Step 2: Check if ANY rank needs structural modification (collective)
-    any_structural_buf = Int32[needs_structural ? 1 : 0]
-    MPI.Allreduce!(any_structural_buf, max, comm)
+    # Check if ANY rank needs column expansion (collective)
+    any_expansion_buf = Int32[needs_col_expansion ? 1 : 0]
+    MPI.Allreduce!(any_expansion_buf, max, comm)
 
-    if any_structural_buf[1] == 0
-        # All modifications were non-structural - we're done
+    if any_expansion_buf[1] == 0
+        # No column expansions needed - we're done
         return val
     end
 
-    # Step 3: Structural modification required by at least one rank
-    # Only apply modification if this rank owns the row
-    if i_own_row && needs_structural
+    # Column expansion required by at least one rank - rebuild with new column
+    if i_own_row && needs_col_expansion
         row_offset = A.row_partition[rank + 1]
         received_mods = [(i, j, convert(T, val))]
         new_AT, new_col_indices = _rebuild_AT_with_insertions(

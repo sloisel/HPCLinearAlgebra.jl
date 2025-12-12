@@ -1798,11 +1798,12 @@ end
 """
     _find_nzval_at_global_col(A::SparseMatrixMPI{T}, local_row::Int, global_col::Int) where T
 
-Find the nonzero value at (local_row, global_col) using binary search.
-Returns the value if found, or nothing if not present.
+Find the value at (local_row, global_col) in the local sparse storage.
+Returns the value if found (including explicit zeros), or nothing if the
+global column is not in this rank's col_indices.
 
-Uses binary search on col_indices (sorted) to convert global→local,
-then binary search on rowval (sorted within each CSC column) to find the entry.
+Note: Returns nothing only when global_col is not in col_indices at all.
+For structural zeros within existing columns, returns zero(T).
 """
 function _find_nzval_at_global_col(A::SparseMatrixMPI{T}, local_row::Int, global_col::Int) where T
     col_indices = A.col_indices
@@ -1813,23 +1814,8 @@ function _find_nzval_at_global_col(A::SparseMatrixMPI{T}, local_row::Int, global
         return nothing  # global_col not in our local columns
     end
 
-    # Binary search within the row's nonzeros (CSC column) for this local column
-    start_idx = A.A.parent.colptr[local_row]
-    end_idx = A.A.parent.colptr[local_row + 1] - 1
-
-    if start_idx > end_idx
-        return nothing  # empty row
-    end
-
-    # rowval is sorted within each column, use binary search
-    rowval_view = view(A.A.parent.rowval, start_idx:end_idx)
-    pos = searchsortedfirst(rowval_view, local_col_idx)
-
-    if pos <= length(rowval_view) && rowval_view[pos] == local_col_idx
-        return A.A.parent.nzval[start_idx + pos - 1]
-    end
-
-    return nothing
+    # Use direct CSC indexing - returns 0 for structural zeros
+    return A.A.parent[local_col_idx, local_row]
 end
 
 """
