@@ -48,7 +48,6 @@ dist_issparse = issparse(Adist)
 @test dist_nnz == ref_nnz
 @test dist_issparse == true
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Copy")
@@ -62,7 +61,6 @@ b_size = size(B)
 @test b_nnz == ref_nnz
 @test b_size == size(A_global)
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Element-wise operations")
@@ -86,7 +84,6 @@ B_imag = imag(Adist_complex)
 bi_sum = sum(B_imag)
 @test bi_sum ≈ sum(imag.(A_complex)) atol=TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Reductions")
@@ -105,7 +102,6 @@ dist_tr = tr(Adist)
 @test dist_mean ≈ ref_sum / (n * n) atol=TOL
 @test dist_tr ≈ tr(A_global) atol=TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Sum with dims")
@@ -129,7 +125,6 @@ MPI.Allgatherv!(row_sums.v, MPI.VBuffer(full_row_sums, counts2), comm)
 err2 = norm(full_row_sums - ref_row_sums)
 @test err2 < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Dropzeros")
@@ -145,7 +140,6 @@ B = dropzeros(Adist_zeros)
 b_nnz = nnz(B)
 @test b_nnz <= ref_nnz_zeros
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Diagonal extraction")
@@ -169,7 +163,6 @@ MPI.Allgatherv!(d1.v, MPI.VBuffer(full_d1, counts_d1), comm)
 err2 = norm(full_d1 - ref_d1)
 @test err2 < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Triangular parts")
@@ -192,7 +185,6 @@ ref_U1 = triu(A_global, 1)
 u1_nnz = nnz(U1)
 @test u1_nnz == nnz(ref_U1)
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI extensions")
@@ -224,7 +216,6 @@ vr_sum = sum(real(v_complex))
 vi_sum = sum(imag(v_complex))
 @test vi_sum ≈ sum(imag.(v_complex_global)) atol=TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] spdiagm")
@@ -272,7 +263,6 @@ d_sum = sum(D)
 @test d_nnz == nnz(ref_D)
 @test d_sum ≈ sum(ref_D) atol=TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI broadcasting")
@@ -343,7 +333,6 @@ v_sqrt = sqrt.(v_int)
 v_sqrt_sum = sum(v_sqrt)
 @test v_sqrt_sum ≈ sum(sqrt.(Float64.(v_int_global))) atol=TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI broadcasting with different partitions")
@@ -409,7 +398,6 @@ compound_part = v_part .* 2.0 .+ w_part
 compound_sum_part = sum(compound_part)
 @test compound_sum_part ≈ sum(v_global_part .* 2.0 .+ w_global_part) atol=TOL
 
-MPI.Barrier(comm)
 
 end  # QuietTestSet
 
@@ -429,7 +417,6 @@ if rank == 0
     flush(stdout)
 end
 
-MPI.Barrier(comm)
 MPI.Finalize()
 
 if global_counts[2] > 0 || global_counts[3] > 0

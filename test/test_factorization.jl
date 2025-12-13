@@ -147,7 +147,6 @@ if rank == 0
 end
 @test err < TOL
 
-MPI.Barrier(comm)
 
 # Test 2: LDLT factorization of SPD matrix
 if rank == 0
@@ -176,7 +175,6 @@ if rank == 0
 end
 @test err < TOL
 
-MPI.Barrier(comm)
 
 # Test 3: LDLT with symmetric indefinite matrix
 if rank == 0
@@ -203,7 +201,6 @@ if rank == 0
 end
 @test err < TOL
 
-MPI.Barrier(comm)
 
 # Test 4: Plan reuse (same structure, different values)
 if rank == 0
@@ -241,7 +238,6 @@ end
 @test err1 < TOL
 @test err2 < TOL
 
-MPI.Barrier(comm)
 
 # Test 5: Complex-valued matrix (LU)
 if rank == 0
@@ -293,7 +289,6 @@ if rank == 0
 end
 @test err < TOL
 
-MPI.Barrier(comm)
 
 # Test 7: Transpose solve - transpose(A) \ b
 if rank == 0
@@ -312,7 +307,6 @@ if rank == 0
 end
 @test err_t < TOL
 
-MPI.Barrier(comm)
 
 # Test 8: Adjoint solve - A' \ b
 if rank == 0
@@ -331,7 +325,6 @@ if rank == 0
 end
 @test err_a < TOL
 
-MPI.Barrier(comm)
 
 # (Test 9 removed - factorization transpose/adjoint for LU was deleted)
 
@@ -356,7 +349,6 @@ if rank == 0
 end
 @test err_rd < TOL
 
-MPI.Barrier(comm)
 
 # Test 11: Right division - transpose(v) / transpose(A)
 if rank == 0
@@ -374,7 +366,6 @@ if rank == 0
 end
 @test err_rdt < TOL
 
-MPI.Barrier(comm)
 
 # Test 12: Right division - v' / A (adjoint)
 if rank == 0
@@ -392,7 +383,6 @@ if rank == 0
 end
 @test err_rda < TOL
 
-MPI.Barrier(comm)
 
 # Test 13: Right division - v' / A'
 if rank == 0
@@ -410,7 +400,6 @@ if rank == 0
 end
 @test err_rdaa < TOL
 
-MPI.Barrier(comm)
 
 # Test 14: LDLT transpose solve via factorization (real symmetric)
 if rank == 0
@@ -436,7 +425,6 @@ if rank == 0
 end
 @test err_ldlt_t < TOL
 
-MPI.Barrier(comm)
 
 # Test 15: Complex symmetric LDLT
 if rank == 0
@@ -463,7 +451,6 @@ if rank == 0
 end
 @test err_cx < TOL
 
-MPI.Barrier(comm)
 
 # (Test 16 removed - complex symmetric LDLT adjoint solve was deleted)
 
@@ -491,7 +478,6 @@ if rank == 0
 end
 @test err_2d < TOL
 
-MPI.Barrier(comm)
 
 # Test 18: LDLT with 2x2 Bunch-Kaufman pivots
 # Uses a dense symmetric indefinite matrix with small diagonal to force 2x2 pivots
@@ -530,7 +516,6 @@ if rank == 0
 end
 @test err_bk < TOL
 
-MPI.Barrier(comm)
 
 # Test 19: Multi-rank supernode distribution
 # Uses block diagonal matrix to create multiple elimination tree roots
@@ -578,7 +563,6 @@ if rank == 0
 end
 @test err_multi < TOL
 
-MPI.Barrier(comm)
 
 # Test 20: LU with 2D Laplacian - exercises extend_add! (unsymmetric version)
 if rank == 0
@@ -604,7 +588,6 @@ if rank == 0
 end
 @test err_2d_lu < TOL
 
-MPI.Barrier(comm)
 
 # Test 21: LU with partial pivoting - matrix requiring row swaps
 # Off-diagonal elements larger than diagonal forces pivot selection
@@ -640,7 +623,6 @@ if rank == 0
 end
 @test err_piv < TOL
 
-MPI.Barrier(comm)
 
 # Test 22: LU with near-zero pivot (triggers small pivot warning path)
 if rank == 0
@@ -678,7 +660,6 @@ end
 # Use looser tolerance due to ill-conditioning
 @test err_small < 1e-6
 
-MPI.Barrier(comm)
 
 # Test 23: LU with exactly zero pivot (tests abs(diag_val) == 0 branch)
 if rank == 0
@@ -716,7 +697,6 @@ if rank == 0
 end
 @test length(x_zero_full) == n_zero  # Just verify solve completes
 
-MPI.Barrier(comm)
 
 # Test 24: LDLT with exactly zero 1x1 pivot (tests abs(d_kk) == 0 branch)
 if rank == 0
@@ -754,7 +734,6 @@ if rank == 0
 end
 @test length(x_ldlt_zero_full) == n_ldlt_zero
 
-MPI.Barrier(comm)
 
 # Test 25: LDLT with near-zero 2x2 pivot determinant
 # Uses similar structure to Test 18 but with det(2x2 block) ≈ 0
@@ -806,7 +785,6 @@ if rank == 0
 end
 @test length(x_det_full) == n_det
 
-MPI.Barrier(comm)
 
 # Test 26: Test swap_rows_cols_sym! with i==j (no-op branch)
 # This occurs when Bunch-Kaufman selects the diagonal element as pivot
@@ -844,7 +822,6 @@ if rank == 0
 end
 @test err_diag < TOL
 
-MPI.Barrier(comm)
 
 # Test 27: LDLT 2x2 pivot with update rows - exercises extract_L_D! else branch
 # Need a matrix where 2x2 pivots are used and there are update rows
@@ -896,7 +873,6 @@ if rank == 0
     flush(stdout)
 end
 
-MPI.Barrier(comm)
 MPI.Finalize()
 
 exit_code = global_counts[2] + global_counts[3] > 0 ? 1 : 0

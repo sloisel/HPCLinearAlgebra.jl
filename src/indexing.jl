@@ -99,9 +99,6 @@ function Base.setindex!(v::VectorMPI{T}, val, i::Integer) where T
         v.v[local_i] = convert(T, val)
     end
 
-    # Barrier to ensure all ranks stay synchronized
-    MPI.Barrier(comm)
-
     return val
 end
 
@@ -361,9 +358,6 @@ function Base.setindex!(A::MatrixMPI{T}, val, i::Integer, j::Integer) where T
         A.A[local_row, j] = convert(T, val)
     end
 
-    # Barrier to ensure all ranks stay synchronized
-    MPI.Barrier(comm)
-
     return val
 end
 
@@ -495,7 +489,6 @@ function Base.setindex!(v::VectorMPI{T}, val::Number, rng::UnitRange{Int}) where
     end
 
     if isempty(rng)
-        MPI.Barrier(comm)
         return val
     end
 
@@ -513,7 +506,6 @@ function Base.setindex!(v::VectorMPI{T}, val::Number, rng::UnitRange{Int}) where
         v.v[local_start:local_end] .= convert(T, val)
     end
 
-    MPI.Barrier(comm)
     return val
 end
 
@@ -531,7 +523,6 @@ function Base.setindex!(v::VectorMPI{T}, vals::AbstractVector, rng::UnitRange{In
     end
 
     if isempty(rng)
-        MPI.Barrier(comm)
         return vals
     end
 
@@ -552,7 +543,6 @@ function Base.setindex!(v::VectorMPI{T}, vals::AbstractVector, rng::UnitRange{In
         v.v[local_start:local_end] .= convert.(T, vals[vals_start:vals_end])
     end
 
-    MPI.Barrier(comm)
     return vals
 end
 
@@ -588,7 +578,6 @@ function Base.setindex!(v::VectorMPI{T}, src::VectorMPI, rng::UnitRange{Int}) wh
     end
 
     if isempty(rng)
-        MPI.Barrier(comm)
         return src
     end
 
@@ -622,7 +611,6 @@ function Base.setindex!(v::VectorMPI{T}, src::VectorMPI, rng::UnitRange{Int}) wh
         end
     end
 
-    MPI.Barrier(comm)
     return src
 end
 
@@ -742,7 +730,6 @@ function Base.setindex!(A::MatrixMPI{T}, val::Number, row_rng::UnitRange{Int}, c
     end
 
     if isempty(row_rng) || isempty(col_rng)
-        MPI.Barrier(comm)
         return val
     end
 
@@ -759,7 +746,6 @@ function Base.setindex!(A::MatrixMPI{T}, val::Number, row_rng::UnitRange{Int}, c
         A.A[local_row_start:local_row_end, col_rng] .= convert(T, val)
     end
 
-    MPI.Barrier(comm)
     return val
 end
 
@@ -780,7 +766,6 @@ function Base.setindex!(A::MatrixMPI{T}, vals::AbstractMatrix, row_rng::UnitRang
     end
 
     if isempty(row_rng) || isempty(col_rng)
-        MPI.Barrier(comm)
         return vals
     end
 
@@ -800,7 +785,6 @@ function Base.setindex!(A::MatrixMPI{T}, vals::AbstractMatrix, row_rng::UnitRang
         A.A[local_row_start:local_row_end, col_rng] .= convert.(T, vals[vals_row_start:vals_row_end, :])
     end
 
-    MPI.Barrier(comm)
     return vals
 end
 
@@ -840,7 +824,6 @@ function Base.setindex!(A::MatrixMPI{T}, src::MatrixMPI, row_rng::UnitRange{Int}
     end
 
     if isempty(row_rng) || isempty(col_rng)
-        MPI.Barrier(comm)
         return src
     end
 
@@ -984,7 +967,6 @@ function Base.setindex!(A::MatrixMPI{T}, src::MatrixMPI, row_rng::UnitRange{Int}
         MPI.Waitall(send_reqs)
     end
 
-    MPI.Barrier(comm)
     return src
 end
 
@@ -1199,7 +1181,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, val::Number, row_rng::UnitRange{I
     end
 
     if isempty(row_rng) || isempty(col_rng)
-        MPI.Barrier(comm)
         return val
     end
 
@@ -1236,7 +1217,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, val::Number, row_rng::UnitRange{I
     # Invalidate cached transpose bidirectionally (values changed)
     _invalidate_cached_transpose!(A)
 
-    MPI.Barrier(comm)
     return val
 end
 
@@ -1284,7 +1264,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::SparseMatrixMPI{T}, row_rng:
     end
 
     if isempty(row_rng) || isempty(col_rng)
-        MPI.Barrier(comm)
         return src
     end
 
@@ -2231,7 +2210,6 @@ function Base.setindex!(v::VectorMPI{T}, src::VectorMPI{T}, idx::VectorMPI{Int})
     end
 
     MPI.Waitall(send_reqs)
-    MPI.Barrier(comm)
 
     return src
 end
@@ -2397,7 +2375,6 @@ function Base.setindex!(A::MatrixMPI{T}, src::MatrixMPI{T}, row_idx::VectorMPI{I
     end
 
     MPI.Waitall(send_reqs)
-    MPI.Barrier(comm)
 
     return src
 end
@@ -3699,7 +3676,6 @@ function Base.setindex!(A::MatrixMPI{T}, src::MatrixMPI{T}, row_idx::VectorMPI{I
     end
 
     MPI.Waitall(data_send_reqs)
-    MPI.Barrier(comm)
 
     return src
 end
@@ -3856,7 +3832,6 @@ function Base.setindex!(A::MatrixMPI{T}, src::MatrixMPI{T}, row_rng::UnitRange{I
     end
 
     MPI.Waitall(data_send_reqs)
-    MPI.Barrier(comm)
 
     return src
 end
@@ -3992,7 +3967,6 @@ function Base.setindex!(A::MatrixMPI{T}, src::VectorMPI{T}, row_idx::VectorMPI{I
     end
 
     MPI.Waitall(data_send_reqs)
-    MPI.Barrier(comm)
 
     return src
 end
@@ -4046,7 +4020,6 @@ function Base.setindex!(A::MatrixMPI{T}, src::VectorMPI{T}, i::Integer, col_idx:
         end
     end
 
-    MPI.Barrier(comm)
     return src
 end
 
@@ -4207,7 +4180,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_idx::Vecto
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
 
-    MPI.Barrier(comm)
     return src
 end
 
@@ -4377,7 +4349,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::MatrixMPI{T}, row_rng::UnitR
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
 
-    MPI.Barrier(comm)
     return src
 end
 
@@ -4529,7 +4500,6 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::VectorMPI{T}, row_idx::Vecto
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
 
-    MPI.Barrier(comm)
     return src
 end
 
@@ -4596,6 +4566,5 @@ function Base.setindex!(A::SparseMatrixMPI{T}, src::VectorMPI{T}, i::Integer, co
     # Invalidate cached transpose bidirectionally
     _invalidate_cached_transpose!(A)
 
-    MPI.Barrier(comm)
     return src
 end

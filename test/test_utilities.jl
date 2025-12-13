@@ -51,7 +51,6 @@ else
     @test result_io === dn_buf
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Vector conversion roundtrip")
@@ -73,7 +72,6 @@ v_back_c = Vector(v_mpi_c)
 @test v_back_c == v_complex
 @test eltype(v_back_c) == ComplexF64
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Matrix conversion roundtrip")
@@ -103,7 +101,6 @@ M_back_c = Matrix(M_mpi_c)
 @test M_back_c == M_complex
 @test eltype(M_back_c) == ComplexF64
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixCSC conversion roundtrip")
@@ -142,7 +139,6 @@ S_back_c = SparseMatrixCSC(S_mpi_c)
 @test S_back_c == S_complex
 @test eltype(S_back_c) == ComplexF64
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI show methods")
@@ -167,7 +163,6 @@ s = String(take!(io))
 s_interp = "$v_test"
 @test occursin("VectorMPI", s_interp)
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI show methods")
@@ -191,7 +186,6 @@ s = String(take!(io))
 s_interp = "$M_test"
 @test occursin("MatrixMPI", s_interp)
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI show methods")
@@ -216,7 +210,6 @@ s = String(take!(io))
 s_interp = "$S_test"
 @test occursin("SparseMatrixMPI", s_interp)
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] io0 with show/print integration")
@@ -243,7 +236,6 @@ else
     @test output == ""
 end
 
-MPI.Barrier(comm)
 
 end  # testset
 
@@ -255,6 +247,5 @@ end
 
 # Exit with appropriate code
 exit_code = (ts.counts[:fail] + ts.counts[:error] > 0) ? 1 : 0
-MPI.Barrier(comm)
 MPI.Finalize()
 exit(exit_code)

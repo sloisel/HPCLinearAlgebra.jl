@@ -39,8 +39,6 @@ AT_ref_dist = SparseMatrixMPI{Float64}(AT_ref)
 err = norm(ATdist - AT_ref_dist, Inf)
 @test err < TOL
 
-MPI.Barrier(comm)
-
 if rank == 0
     println("[test] Transpose with ComplexF64")
     flush(stdout)
@@ -56,8 +54,6 @@ AT_ref_c = sparse(transpose(A_c))
 AT_ref_dist_c = SparseMatrixMPI{ComplexF64}(AT_ref_c)
 err_c = norm(ATdist_c - AT_ref_dist_c, Inf)
 @test err_c < TOL
-
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Square matrix transpose")
@@ -78,8 +74,6 @@ AT_ref_dist2 = SparseMatrixMPI{Float64}(AT_ref2)
 err2 = norm(ATdist2 - AT_ref_dist2, Inf)
 @test err2 < TOL
 
-MPI.Barrier(comm)
-
 end  # QuietTestSet
 
 # Aggregate counts across ranks
@@ -92,7 +86,6 @@ if rank == 0
     flush(stdout)
 end
 
-MPI.Barrier(comm)
 MPI.Finalize()
 
 if global_counts[2] > 0 || global_counts[3] > 0

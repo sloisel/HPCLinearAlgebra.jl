@@ -44,8 +44,6 @@ C_ref_dist = SparseMatrixMPI{Float64}(C_ref)
 err = norm(Cdist - C_ref_dist, Inf)
 @test err < TOL
 
-MPI.Barrier(comm)
-
 if rank == 0
     println("[test] Matrix addition with ComplexF64")
     flush(stdout)
@@ -67,8 +65,6 @@ C_ref_dist_c = SparseMatrixMPI{ComplexF64}(C_ref_c)
 err_c = norm(Cdist_c - C_ref_dist_c, Inf)
 @test err_c < TOL
 
-MPI.Barrier(comm)
-
 if rank == 0
     println("[test] Matrix subtraction")
     flush(stdout)
@@ -86,8 +82,6 @@ C_ref2 = A2 - B2
 C_ref_dist2 = SparseMatrixMPI{Float64}(C_ref2)
 err2 = norm(Cdist2 - C_ref_dist2, Inf)
 @test err2 < TOL
-
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Different sparsity patterns")
@@ -112,8 +106,6 @@ C_ref_dist3 = SparseMatrixMPI{Float64}(C_ref3)
 err3 = norm(Cdist3 - C_ref_dist3, Inf)
 @test err3 < TOL
 
-MPI.Barrier(comm)
-
 end  # QuietTestSet
 
 # Aggregate counts across ranks
@@ -126,7 +118,6 @@ if rank == 0
     flush(stdout)
 end
 
-MPI.Barrier(comm)
 MPI.Finalize()
 
 if global_counts[2] > 0 || global_counts[3] > 0

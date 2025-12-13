@@ -107,7 +107,6 @@ if rank == 0
     println("  Subtree roots on rank 0: $(length(plan.subtree_roots))")
 end
 
-MPI.Barrier(comm)
 
 # Test 2: Distributed LU solve - small matrix
 if rank == 0
@@ -134,7 +133,6 @@ end
 
 @test residual_small < TOL
 
-MPI.Barrier(comm)
 
 # Test 3: Distributed LU solve - 2D Laplacian
 if rank == 0
@@ -161,7 +159,6 @@ end
 
 @test residual_2d < TOL
 
-MPI.Barrier(comm)
 
 # Test 4: Distributed LDLT solve
 if rank == 0
@@ -188,7 +185,6 @@ end
 
 @test residual_ldlt < TOL
 
-MPI.Barrier(comm)
 
 # Test 5: Distributed LDLT solve - 2D Laplacian
 if rank == 0
@@ -215,7 +211,6 @@ end
 
 @test residual_ldlt_2d < TOL
 
-MPI.Barrier(comm)
 
 # Test 6: Large matrix to force cross-rank communication
 # The cross-rank code paths only execute when subtree roots have parents on other ranks
@@ -255,7 +250,6 @@ end
 
 @test residual_large < TOL
 
-MPI.Barrier(comm)
 
 # Test 7: Even larger LDLT to ensure cross-rank paths are exercised
 if rank == 0
@@ -292,7 +286,6 @@ end
 
 @test residual_large_ldlt < TOL
 
-MPI.Barrier(comm)
 
 end  # QuietTestSet
 
@@ -307,7 +300,6 @@ if rank == 0
     flush(stdout)
 end
 
-MPI.Barrier(comm)
 MPI.Finalize()
 
 exit_code = global_counts[2] + global_counts[3] > 0 ? 1 : 0

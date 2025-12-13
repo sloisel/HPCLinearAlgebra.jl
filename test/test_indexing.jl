@@ -174,7 +174,6 @@ for i in 1:n
     @test result ≈ v_global[i] atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI getindex (complex)")
@@ -187,7 +186,6 @@ for i in [1, div(n, 2), n]
     @test result ≈ v_complex_global[i] atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI setindex!")
@@ -209,7 +207,6 @@ for i in 1:n
     @test result ≈ Float64(i * 10) atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI getindex - existing entries")
@@ -223,7 +220,6 @@ for k in eachindex(I_vals)
     @test result ≈ A_global[i, j] atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI getindex - structural zeros")
@@ -241,7 +237,6 @@ for (i, j) in test_zero_positions
     @test result ≈ 0.0 atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI getindex (complex)")
@@ -255,7 +250,6 @@ for k in [1, 5, 9]
     @test result ≈ A_complex_global[i, j] atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI setindex! - modify existing entries")
@@ -281,7 +275,6 @@ for k in eachindex(I_vals)
     @test result ≈ Float64(k * 100) atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI setindex! (complex)")
@@ -308,7 +301,6 @@ for k in test_modify_indices
     @test result ≈ expected atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI getindex")
@@ -323,7 +315,6 @@ for i in 1:n
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI getindex (complex)")
@@ -338,7 +329,6 @@ for i in [1, div(n, 2), n]
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI setindex!")
@@ -363,7 +353,6 @@ for (i, j) in test_positions
     @test result ≈ expected atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI setindex! (complex)")
@@ -385,7 +374,6 @@ for (i, j) in test_positions
     @test result ≈ expected atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Edge cases - boundary indices")
@@ -407,7 +395,6 @@ end
 @test M[n, 1] ≈ M_global[n, 1] atol=TOL
 @test M[n, n] ≈ M_global[n, n] atol=TOL
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # Range Indexing Tests
@@ -429,7 +416,6 @@ for (rng_start, rng_end) in [(1, 4), (3, 7), (5, n), (1, n)]
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI range setindex! (scalar)")
@@ -447,7 +433,6 @@ for i in 1:n
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI range setindex! (vector)")
@@ -465,7 +450,6 @@ for i in 1:n
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI range getindex")
@@ -483,7 +467,6 @@ for i in 1:length(row_rng)
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI range getindex with Colon")
@@ -507,7 +490,6 @@ for i in 1:n
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI range setindex! (scalar)")
@@ -527,7 +509,6 @@ for i in 1:n
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI range setindex! (matrix)")
@@ -544,7 +525,6 @@ for i in 2:4
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI range getindex")
@@ -565,7 +545,6 @@ A_sub = A[row_rng, col_rng]
 @test A_sub[2, 2] ≈ A_global[3, 3] atol=TOL  # Diagonal entry
 @test A_sub[3, 3] ≈ A_global[4, 4] atol=TOL  # Diagonal entry
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI range getindex with Colon")
@@ -578,7 +557,6 @@ A_rows = A[2:5, :]
 A_cols = A[:, 3:8]
 @test size(A_cols) == (n, 6)
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI range setindex! (scalar)")
@@ -602,7 +580,6 @@ A_modify[2:4, 2:5] = 0.0
 @test A_modify[1, 1] ≈ A_global[1, 1] atol=TOL
 @test A_modify[5, 5] ≈ A_global[5, 5] atol=TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI range getindex preserves partition structure")
@@ -615,7 +592,6 @@ w2 = v[3:8]
 @test w1.partition == w2.partition
 @test w1.structural_hash == w2.structural_hash
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Complex VectorMPI range getindex")
@@ -629,7 +605,6 @@ for (local_idx, global_idx) in enumerate(2:6)
     @test w_complex[local_idx] ≈ v_complex_global[global_idx] atol=TOL
 end
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # VectorMPI indexing with VectorMPI indices
@@ -657,7 +632,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI setindex! with VectorMPI indices")
@@ -682,7 +656,6 @@ if rank == 0
     @test v_modify_gathered[5] ≈ v_global[5] atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI getindex with VectorMPI indices")
@@ -711,7 +684,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI setindex! with VectorMPI indices")
@@ -742,7 +714,6 @@ if rank == 0
     @test A_dense_modify_gathered[2, 2] ≈ 0.0 atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI getindex with VectorMPI indices")
@@ -770,7 +741,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI setindex! with VectorMPI indices")
@@ -801,7 +771,6 @@ if rank == 0
     @test A_sparse_modify_dense[2, 2] ≈ 0.0 atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI indexing with VectorMPI indices (complex)")
@@ -823,7 +792,6 @@ if rank == 0
     @test v_complex_modify_gathered[2] ≈ v_complex_global[2] atol=TOL
 end
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # Cross-rank communication tests
@@ -855,7 +823,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Cross-rank VectorMPI setindex! with VectorMPI indices")
@@ -882,7 +849,6 @@ if rank == 0
     @test v_large_gathered[50] ≈ v_large_global[50] atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Cross-rank MatrixMPI getindex with VectorMPI indices")
@@ -911,7 +877,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Cross-rank MatrixMPI setindex! with VectorMPI indices")
@@ -936,7 +901,6 @@ if rank == 0
     @test M_large_modify_gathered[20, 5] ≈ 0.0 atol=TOL  # Unchanged
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Cross-rank SparseMatrixMPI getindex with VectorMPI indices")
@@ -967,7 +931,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Cross-rank SparseMatrixMPI setindex! with VectorMPI indices")
@@ -992,7 +955,6 @@ if rank == 0
     @test A_large_modify_gathered[20, 20] ≈ 0.0 atol=TOL  # Unchanged
 end
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # Structural modification tests (SparseMatrixMPI insert new nonzeros)
@@ -1019,7 +981,6 @@ A_struct[1, 5] = 99.0
 @test A_struct[1, 1] ≈ 1.0 atol=TOL
 @test A_struct[2, 2] ≈ 2.0 atol=TOL
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # Cached transpose invalidation tests
@@ -1060,7 +1021,6 @@ A_cache[2, 5] = 99.0  # Insert at a position that's not in sparsity pattern
 # AT_cache's cached_transpose should also have been invalidated through the bidirectional link
 @test AT_cache.cached_transpose === nothing
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # Mixed indexing tests: VectorMPI + range, VectorMPI + Colon, VectorMPI + Int
@@ -1084,7 +1044,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI getindex with range rows and VectorMPI columns")
@@ -1104,7 +1063,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI getindex with VectorMPI rows and Colon columns")
@@ -1124,7 +1082,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI getindex with Colon rows and VectorMPI columns")
@@ -1144,7 +1101,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI getindex with VectorMPI rows and Int column")
@@ -1163,7 +1119,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI getindex with Int row and VectorMPI columns")
@@ -1182,7 +1137,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI getindex with VectorMPI rows and range columns")
@@ -1202,7 +1156,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI getindex with range rows and VectorMPI columns")
@@ -1222,7 +1175,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI getindex with VectorMPI rows and Colon columns")
@@ -1242,7 +1194,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI getindex with Colon rows and VectorMPI columns")
@@ -1262,7 +1213,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI getindex with VectorMPI rows and Int column")
@@ -1281,7 +1231,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI getindex with Int row and VectorMPI columns")
@@ -1300,7 +1249,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # Mixed setindex! tests
@@ -1323,7 +1271,6 @@ if rank == 0
     @test M_setmix_gathered[2, 2] ≈ 0.0 atol=TOL  # Unchanged
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI setindex! with range rows and VectorMPI columns")
@@ -1342,7 +1289,6 @@ if rank == 0
     @test M_setmix2_gathered[5, 5] ≈ 0.0 atol=TOL  # Unchanged
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI setindex! with VectorMPI rows and Int column")
@@ -1360,7 +1306,6 @@ if rank == 0
     @test M_setint_gathered[10, 4] ≈ 333.0 atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI setindex! with Int row and VectorMPI columns")
@@ -1378,7 +1323,6 @@ if rank == 0
     @test M_setint2_gathered[5, 11] ≈ 666.0 atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI setindex! with VectorMPI rows and range columns")
@@ -1397,7 +1341,6 @@ if rank == 0
     @test A_setmix_gathered[2, 2] ≈ 0.0 atol=TOL  # Unchanged
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI setindex! with range rows and VectorMPI columns")
@@ -1416,7 +1359,6 @@ if rank == 0
     @test A_setmix2_gathered[5, 5] ≈ 0.0 atol=TOL  # Unchanged
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI setindex! with VectorMPI rows and Int column")
@@ -1434,7 +1376,6 @@ if rank == 0
     @test A_setint_gathered[10, 4] ≈ 333.0 atol=TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI setindex! with Int row and VectorMPI columns")
@@ -1452,7 +1393,6 @@ if rank == 0
     @test A_setint2_gathered[5, 11] ≈ 666.0 atol=TOL
 end
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # Range setindex! with SparseMatrixMPI (matrix source)
@@ -1473,7 +1413,6 @@ for i in 2:4
     end
 end
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # VectorMPI range setindex! with VectorMPI source
@@ -1496,7 +1435,6 @@ for i in 1:n
     end
 end
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # MatrixMPI getindex with Colon, Colon (full matrix copy)
@@ -1518,7 +1456,6 @@ for i in 1:n
     end
 end
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # MatrixMPI range setindex! with MatrixMPI source
@@ -1542,7 +1479,6 @@ end
 @test M_matrix_src[1, 1] ≈ 0.0 atol=TOL
 @test M_matrix_src[6, 8] ≈ 0.0 atol=TOL
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # SparseMatrixMPI range setindex! with cross-rank SparseMatrixMPI source
@@ -1579,7 +1515,6 @@ A_crossrank[10:29, 5:24] = src_sparse
 # Position outside source should be zero
 @test A_crossrank[1, 1] ≈ 0.0 atol=TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI range setindex! (cross-rank with row intersection)")
@@ -1611,7 +1546,6 @@ A_crossrank2[18:22, 18:22] = src_sparse2
 @test A_crossrank2[19, 21] ≈ 204.0 atol=TOL  # src[2,4]
 @test A_crossrank2[20, 22] ≈ 305.0 atol=TOL  # src[3,5]
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # Empty range tests for SparseMatrixMPI
@@ -1628,7 +1562,6 @@ A_empty_rows = A_empty_test[1:0, 1:5]
 @test size(A_empty_rows) == (0, 5)
 @test nnz(SparseMatrixCSC(A_empty_rows)) == 0
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI getindex with empty column range")
@@ -1640,7 +1573,6 @@ A_empty_cols = A_empty_test[1:5, 1:0]
 @test size(A_empty_cols) == (5, 0)
 @test nnz(SparseMatrixCSC(A_empty_cols)) == 0
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI getindex with both ranges empty")
@@ -1651,7 +1583,6 @@ A_empty_both = A_empty_test[1:0, 1:0]
 @test size(A_empty_both) == (0, 0)
 @test nnz(SparseMatrixCSC(A_empty_both)) == 0
 
-MPI.Barrier(comm)
 
 # Also test MatrixMPI empty ranges
 if rank == 0
@@ -1663,7 +1594,6 @@ M_empty_test = MatrixMPI(M_global)
 M_empty_rows = M_empty_test[1:0, 1:5]
 @test size(M_empty_rows) == (0, 5)
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI getindex with empty column range")
@@ -1673,7 +1603,6 @@ end
 M_empty_cols = M_empty_test[1:5, 1:0]
 @test size(M_empty_cols) == (5, 0)
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI getindex with both ranges empty")
@@ -1683,7 +1612,6 @@ end
 M_empty_both = M_empty_test[1:0, 1:0]
 @test size(M_empty_both) == (0, 0)
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # SparseMatrixMPI setindex! fast path with matching partitions
@@ -1713,7 +1641,6 @@ A_dest_match[1:n_match, 1:n_match] = src_match
 @test A_dest_match[20, 20] ≈ 220.0 atol=TOL
 @test A_dest_match[1, 1] ≈ 0.0 atol=TOL  # Structural zero
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # MatrixMPI getindex with VectorMPI rows and Int column (cross-rank)
@@ -1744,7 +1671,6 @@ if rank == 0
     end
 end
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # MatrixMPI setindex! with VectorMPI rows and range columns (cross-rank send)
@@ -1771,7 +1697,6 @@ if rank == 0
     @test M_set_gathered[10, 5] ≈ 0.0 atol=TOL  # Unchanged
 end
 
-MPI.Barrier(comm)
 
 # ============================================================================
 # SparseMatrixMPI setindex! with MatrixMPI source, VectorMPI rows (cross-rank)
@@ -1798,7 +1723,6 @@ if rank == 0
     @test A_sparse_gathered[10, 5] ≈ 0.0 atol=TOL  # Unchanged
 end
 
-MPI.Barrier(comm)
 
 end  # QuietTestSet
 
@@ -1818,7 +1742,6 @@ if rank == 0
     flush(stdout)
 end
 
-MPI.Barrier(comm)
 MPI.Finalize()
 
 if global_counts[2] > 0 || global_counts[3] > 0

@@ -95,7 +95,7 @@ function numerical_factorization_lu(A::SparseMatrixMPI{T},
             # This rank owns this supernode
 
             # 1. Initialize frontal matrix from distributed input
-            F = initialize_frontal_distributed(input_plan, A, snode, info)
+            F = initialize_frontal_distributed(input_plan, info)
 
             # 2. Extend-add update matrices from children
             for child_sidx in symbolic.snode_children[sidx]
@@ -177,8 +177,6 @@ function numerical_factorization_lu(A::SparseMatrixMPI{T},
             end
         end
 
-        # Synchronize between supernodes to ensure correct ordering
-        MPI.Barrier(comm)
     end
 
     # Build local sparse L and U

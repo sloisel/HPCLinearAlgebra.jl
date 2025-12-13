@@ -256,70 +256,19 @@ function execute_input_plan!(plan::FactorizationInputPlan{T},
 end
 
 # ============================================================================
-# Helper: Get Entry Value
-# ============================================================================
-
-"""
-    get_permuted_entry(plan::FactorizationInputPlan{T},
-                       A::SparseMatrixMPI{T},
-                       perm_row::Int, perm_col::Int) where T
-
-Get the value of Ap[perm_row, perm_col] = A[perm[perm_row], perm[perm_col]].
-
-First checks received_values, then falls back to local A if this rank owns it.
-"""
-function get_permuted_entry(plan::FactorizationInputPlan{T},
-                            A::SparseMatrixMPI{T},
-                            perm_row::Int, perm_col::Int) where T
-    # Check received values first
-    if haskey(plan.received_values, (perm_row, perm_col))
-        return plan.received_values[(perm_row, perm_col)]
-    end
-
-    # Check if we own this entry locally
-    perm = plan.symbolic.perm
-    orig_row = perm[perm_row]
-    orig_col = perm[perm_col]
-
-    my_row_start = plan.row_partition[plan.myrank + 1]
-    my_row_end = plan.row_partition[plan.myrank + 2] - 1
-
-    if my_row_start <= orig_row <= my_row_end
-        # Look up in local A
-        AT = A.A.parent
-        local_row_idx = orig_row - my_row_start + 1
-
-        for ptr in nzrange(AT, local_row_idx)
-            if A.col_indices[rowvals(AT)[ptr]] == orig_col
-                return nonzeros(AT)[ptr]
-            end
-        end
-    end
-
-    return zero(T)
-end
-
-# ============================================================================
 # Initialize Frontal Matrix from Distributed Input
 # ============================================================================
 
 """
-    initialize_frontal_distributed(plan::FactorizationInputPlan{T},
-                                    A::SparseMatrixMPI{T},
-                                    snode::Supernode,
-                                    info::FrontalInfo) where T
+    initialize_frontal_distributed(plan::FactorizationInputPlan{T}, info::FrontalInfo) where T
 
 Initialize a frontal matrix using distributed matrix input.
 
 Uses the input plan's received values instead of gathering the full matrix.
 """
-function initialize_frontal_distributed(plan::FactorizationInputPlan{T},
-                                        A::SparseMatrixMPI{T},
-                                        snode::Supernode,
-                                        info::FrontalInfo) where T
+function initialize_frontal_distributed(plan::FactorizationInputPlan{T}, info::FrontalInfo) where T
     row_indices = info.row_indices
     nfs = info.nfs
-    nrows = length(row_indices)
 
     F = FrontalMatrix{T}(copy(row_indices), copy(row_indices), nfs)
 
@@ -328,8 +277,7 @@ function initialize_frontal_distributed(plan::FactorizationInputPlan{T},
         for (local_row, perm_row) in enumerate(row_indices)
             # Only fill if local_col <= nfs OR local_row <= nfs
             if local_col <= nfs || local_row <= nfs
-                val = get_permuted_entry(plan, A, perm_row, perm_col)
-                F.F[local_row, local_col] = val
+                F.F[local_row, local_col] = get(plan.received_values, (perm_row, perm_col), zero(T))
             end
         end
     end
@@ -338,20 +286,13 @@ function initialize_frontal_distributed(plan::FactorizationInputPlan{T},
 end
 
 """
-    initialize_frontal_sym_distributed(plan::FactorizationInputPlan{T},
-                                        A::SparseMatrixMPI{T},
-                                        snode::Supernode,
-                                        info::FrontalInfo) where T
+    initialize_frontal_sym_distributed(plan::FactorizationInputPlan{T}, info::FrontalInfo) where T
 
 Initialize a symmetric frontal matrix using distributed matrix input.
 """
-function initialize_frontal_sym_distributed(plan::FactorizationInputPlan{T},
-                                            A::SparseMatrixMPI{T},
-                                            snode::Supernode,
-                                            info::FrontalInfo) where T
+function initialize_frontal_sym_distributed(plan::FactorizationInputPlan{T}, info::FrontalInfo) where T
     row_indices = info.row_indices
     nfs = info.nfs
-    nrows = length(row_indices)
 
     F = FrontalMatrix{T}(copy(row_indices), copy(row_indices), nfs)
 
@@ -359,7 +300,7 @@ function initialize_frontal_sym_distributed(plan::FactorizationInputPlan{T},
     for (local_col, perm_col) in enumerate(row_indices)
         for (local_row, perm_row) in enumerate(row_indices)
             if local_col <= nfs || local_row <= nfs
-                val = get_permuted_entry(plan, A, perm_row, perm_col)
+                val = get(plan.received_values, (perm_row, perm_col), zero(T))
                 F.F[local_row, local_col] = val
                 if local_row != local_col
                     F.F[local_col, local_row] = val  # Symmetric

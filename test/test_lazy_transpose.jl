@@ -54,8 +54,6 @@ ref_dist = SparseMatrixMPI{Float64}(ref)
 err = norm(result_dist - ref_dist, Inf)
 @test err < TOL
 
-MPI.Barrier(comm)
-
 if rank == 0
     println("[test] transpose(A) * B (materialize left)")
     flush(stdout)
@@ -83,8 +81,6 @@ ref_dist = SparseMatrixMPI{Float64}(ref)
 
 err = norm(result_dist - ref_dist, Inf)
 @test err < TOL
-
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] A * transpose(B) (materialize right)")
@@ -114,8 +110,6 @@ ref_dist = SparseMatrixMPI{Float64}(ref)
 err = norm(result_dist - ref_dist, Inf)
 @test err < TOL
 
-MPI.Barrier(comm)
-
 if rank == 0
     println("[test] Adjoint (conjugate transpose) with ComplexF64")
     flush(stdout)
@@ -142,8 +136,6 @@ ref_dist = SparseMatrixMPI{ComplexF64}(ref)
 err = norm(result_dist - ref_dist, Inf)
 @test err < TOL
 
-MPI.Barrier(comm)
-
 if rank == 0
     println("[test] conj(A) with ComplexF64")
     flush(stdout)
@@ -162,8 +154,6 @@ ref_dist = SparseMatrixMPI{ComplexF64}(ref)
 
 err = norm(result_dist - ref_dist, Inf)
 @test err < TOL
-
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Scalar multiplication")
@@ -206,8 +196,6 @@ result_dist = LinearAlgebraMPI.execute_plan!(plan, result_lazy.parent)
 err4 = norm(result_dist - ref_dist, Inf)
 @test err4 < TOL
 
-MPI.Barrier(comm)
-
 if rank == 0
     println("[test] Scalar multiplication with ComplexF64")
     flush(stdout)
@@ -244,8 +232,6 @@ ref_dist = SparseMatrixMPI{ComplexF64}(ref)
 err3 = norm(result_dist - ref_dist, Inf)
 @test err3 < TOL
 
-MPI.Barrier(comm)
-
 if rank == 0
     println("[test] norm")
     flush(stdout)
@@ -269,8 +255,6 @@ err4 = abs(norm(Adist, 3) - norm(A, 3))
 @test err3 < TOL
 @test err4 < TOL
 
-MPI.Barrier(comm)
-
 if rank == 0
     println("[test] norm with ComplexF64")
     flush(stdout)
@@ -292,8 +276,6 @@ err3 = abs(norm(Adist, Inf) - norm(A, Inf))
 @test err2 < TOL
 @test err3 < TOL
 
-MPI.Barrier(comm)
-
 if rank == 0
     println("[test] opnorm")
     flush(stdout)
@@ -312,8 +294,6 @@ err2 = abs(opnorm(Adist, Inf) - opnorm(A, Inf))
 
 @test err1 < TOL
 @test err2 < TOL
-
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] opnorm with ComplexF64")
@@ -334,8 +314,6 @@ err2 = abs(opnorm(Adist, Inf) - opnorm(A, Inf))
 @test err1 < TOL
 @test err2 < TOL
 
-MPI.Barrier(comm)
-
 end  # QuietTestSet
 
 # Aggregate counts across ranks
@@ -354,7 +332,6 @@ if rank == 0
     flush(stdout)
 end
 
-MPI.Barrier(comm)
 MPI.Finalize()
 
 if global_counts[2] > 0 || global_counts[3] > 0

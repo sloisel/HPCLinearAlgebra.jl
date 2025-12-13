@@ -59,7 +59,6 @@ local_ref = A[my_start:my_end, :]
 err = maximum(abs.(Adist.A .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI * VectorMPI")
@@ -83,7 +82,6 @@ local_ref = y_ref[my_start:my_end]
 err = maximum(abs.(ydist.v .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI mul! (in-place)")
@@ -108,7 +106,6 @@ local_ref = y_ref[my_start:my_end]
 err = maximum(abs.(ydist.v .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI with ComplexF64")
@@ -132,7 +129,6 @@ local_ref = y_ref[my_start:my_end]
 err = maximum(abs.(ydist.v .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] transpose(MatrixMPI) * VectorMPI")
@@ -157,7 +153,6 @@ local_ref = y_ref[my_col_start:my_col_end]
 err = maximum(abs.(ydist.v .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] adjoint(MatrixMPI) * VectorMPI")
@@ -182,7 +177,6 @@ local_ref = y_ref[my_col_start:my_col_end]
 err = maximum(abs.(ydist.v .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] transpose(VectorMPI) * MatrixMPI")
@@ -207,7 +201,6 @@ local_ref = collect(y_ref)[my_col_start:my_col_end]
 err = maximum(abs.(yt.parent.v .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI' * MatrixMPI (Float64)")
@@ -232,7 +225,6 @@ local_ref = collect(y_ref)[my_col_start:my_col_end]
 err = maximum(abs.(yt.parent.v .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI' * MatrixMPI (ComplexF64)")
@@ -257,7 +249,6 @@ local_ref = collect(y_ref)[my_col_start:my_col_end]
 err = maximum(abs.(yt.parent.v .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI transpose materialization")
@@ -280,7 +271,6 @@ local_ref = At_ref[my_start:my_end, :]
 err = maximum(abs.(At_dist.A .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI adjoint materialization")
@@ -303,7 +293,6 @@ local_ref = Ah_ref[my_start:my_end, :]
 err = maximum(abs.(Ah_dist.A .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI scalar multiplication")
@@ -338,7 +327,6 @@ Ct = a * transpose(Adist)
 Ct = transpose(Adist) * a
 @test isa(Ct, Transpose)
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI conj")
@@ -359,7 +347,6 @@ local_ref = Aconj_ref[my_start:my_end, :]
 err = maximum(abs.(Aconj_dist.A .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI norms")
@@ -391,7 +378,6 @@ norm15 = norm(Adist, 1.5)
 norm15_ref = norm(A, 1.5)
 @test abs(norm15 - norm15_ref) < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI operator norms")
@@ -413,7 +399,6 @@ opnorminf = opnorm(Adist, Inf)
 opnorminf_ref = opnorm(A, Inf)
 @test abs(opnorminf - opnorminf_ref) < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Square MatrixMPI operations")
@@ -445,7 +430,6 @@ y_ref_t = transpose(A) * x_global
 err_t = maximum(abs.(ydist_t.v .- y_ref_t[my_start:my_end]))
 @test err_t < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] mapslices dims=2 (row-wise)")
@@ -469,7 +453,6 @@ gathered = gather_matrix(Bdist)
 err = maximum(abs.(gathered .- B_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] mapslices dims=1 (column-wise)")
@@ -493,7 +476,6 @@ gathered = gather_matrix(Bdist)
 err = maximum(abs.(gathered .- B_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] mapslices dims=2 preserves row partition")
@@ -511,7 +493,6 @@ Bdist = mapslices(f_partition, Adist; dims=2)
 # dims=2 preserves row partition
 @test Bdist.row_partition == Adist.row_partition
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] mapslices with ComplexF64")
@@ -535,7 +516,6 @@ gathered = gather_matrix(Bdist)
 err = maximum(abs.(gathered .- B_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 end  # QuietTestSet
 
@@ -555,7 +535,6 @@ if rank == 0
     flush(stdout)
 end
 
-MPI.Barrier(comm)
 MPI.Finalize()
 
 if global_counts[2] > 0 || global_counts[3] > 0

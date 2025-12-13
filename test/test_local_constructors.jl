@@ -35,7 +35,6 @@ v_global = Vector(v_mpi)
 @test v_global == Float64.(1:10)
 @test length(v_mpi) == 10
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI_local roundtrip consistency")
@@ -54,7 +53,6 @@ v_back = Vector(v_from_local)
 @test v_back == v_original
 @test v_from_local.partition == v_from_global.partition
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI_local complex")
@@ -67,7 +65,6 @@ v_complex_mpi = VectorMPI_local(v_complex_local)
 @test length(v_complex_mpi) == nranks * 2
 @test eltype(v_complex_mpi) == ComplexF64
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI_local basic")
@@ -95,7 +92,6 @@ M_gathered = Matrix(M_mpi)
 M_expected = Float64[(i + j*0.1) for i in 1:m_global, j in 1:n_cols]
 @test M_gathered ≈ M_expected
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI_local roundtrip consistency")
@@ -118,7 +114,6 @@ M_back = Matrix(M_from_local)
 @test M_back == M_original
 @test M_from_local.row_partition == M_from_global.row_partition
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI_local complex")
@@ -131,7 +126,6 @@ M_complex_mpi = MatrixMPI_local(M_complex_local)
 @test size(M_complex_mpi, 2) == 3
 @test eltype(M_complex_mpi) == ComplexF64
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI_local basic")
@@ -177,7 +171,6 @@ local_transpose = transpose(local_csc)
 S_mpi = SparseMatrixMPI_local(local_transpose)
 @test size(S_mpi) == (m_sparse, n_sparse)
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI_local roundtrip consistency")
@@ -214,7 +207,6 @@ S_back = SparseMatrixCSC(S_from_local)
 @test S_back == S_original
 @test S_from_local.row_partition == S_from_global.row_partition
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI_local with Adjoint")
@@ -237,7 +229,6 @@ S_adj_csc = SparseMatrixCSC(S_adj)
 # Note: Due to partition differences across ranks, just verify structure is valid
 @test nnz(S_adj_csc) > 0
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI_local * VectorMPI_local")
@@ -273,7 +264,6 @@ y_result = Vector(y_mpi)
 
 @test y_result ≈ y_expected
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] SparseMatrixMPI_local * VectorMPI_local")
@@ -298,7 +288,6 @@ y_sp_result = Vector(y_sp)
 
 @test y_sp_result ≈ y_sp_expected
 
-MPI.Barrier(comm)
 
 end  # testset
 
@@ -310,6 +299,5 @@ end
 
 # Exit with appropriate code
 exit_code = (ts.counts[:fail] + ts.counts[:error] > 0) ? 1 : 0
-MPI.Barrier(comm)
 MPI.Finalize()
 exit(exit_code)

@@ -54,7 +54,6 @@ local_ref = y_ref[my_start:my_end]
 err = maximum(abs.(ydist.v .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Matrix-vector multiplication (in-place)")
@@ -88,7 +87,6 @@ local_ref = y_ref[my_start:my_end]
 err = maximum(abs.(ydist.v .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Matrix-vector multiplication with ComplexF64")
@@ -117,7 +115,6 @@ local_ref = y_ref[my_start:my_end]
 err = maximum(abs.(ydist.v .- local_ref))
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Non-square matrix-vector multiplication")
@@ -146,7 +143,6 @@ local_ref = y_ref[my_start:my_end]
 err = maximum(abs.(ydist.v .- local_ref); init=0.0)
 @test err < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Vector transpose and adjoint")
@@ -194,7 +190,6 @@ local_adj_ref = collect(y_adj_ref)[my_col_start:my_col_end]
 err_adjoint = maximum(abs.(yt_adj.parent.v .- local_adj_ref))
 @test err_adjoint < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Vector norms")
@@ -238,7 +233,6 @@ cnorm2 = norm(zdist)
 cnorm2_ref = norm(z_global)
 @test abs(cnorm2 - cnorm2_ref) < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Vector reductions")
@@ -269,7 +263,6 @@ mn = minimum(xdist)
 mn_ref = minimum(x_global)
 @test abs(mn - mn_ref) < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Vector addition and subtraction")
@@ -304,7 +297,6 @@ w_ref = -v_global
 err_neg = maximum(abs.(wdist.v .- w_ref[my_start:my_end]))
 @test err_neg < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Vector operations with different partitions")
@@ -379,7 +371,6 @@ else
     @test err_tadd < TOL
 end
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Transposed vector addition and subtraction")
@@ -414,7 +405,6 @@ w_ref = -v_global
 err_neg = maximum(abs.(wt.parent.v .- w_ref[my_start:my_end]))
 @test err_neg < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Scalar multiplication")
@@ -463,7 +453,6 @@ w_ref = v_global / a
 err_vtdiv = maximum(abs.(wt.parent.v .- w_ref[my_start:my_end]))
 @test err_vtdiv < TOL
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] Vector size and eltype")
@@ -480,7 +469,6 @@ vdist = VectorMPI(v_global)
 @test eltype(vdist) == Float64
 @test eltype(VectorMPI{ComplexF64}) == ComplexF64
 
-MPI.Barrier(comm)
 
 end  # QuietTestSet
 
@@ -500,7 +488,6 @@ if rank == 0
     flush(stdout)
 end
 
-MPI.Barrier(comm)
 MPI.Finalize()
 
 if global_counts[2] > 0 || global_counts[3] > 0

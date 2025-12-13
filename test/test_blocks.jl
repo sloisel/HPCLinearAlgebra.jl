@@ -98,7 +98,6 @@ result = gather_sparse(result_dist)
 
 @test result == ref
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] cat dims=2 (hcat)")
@@ -123,7 +122,6 @@ result = gather_sparse(result_dist)
 
 @test result == ref
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] cat dims=(2,2) block matrix")
@@ -153,7 +151,6 @@ result = gather_sparse(result_dist)
 
 @test result == ref
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] cat dims=(3,2) block matrix")
@@ -187,7 +184,6 @@ result = gather_sparse(result_dist)
 
 @test result == ref
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] cat dims=(2,3) block matrix")
@@ -220,7 +216,6 @@ result = gather_sparse(result_dist)
 
 @test result == ref
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] cat dims=(1,n) same as hcat")
@@ -243,7 +238,6 @@ ref = hcat(A, B, C)
 @test result1 == ref
 @test result2 == ref
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] cat dims=(n,1) same as vcat")
@@ -266,7 +260,6 @@ ref = vcat(A, B, C)
 @test result1 == ref
 @test result2 == ref
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI vcat")
@@ -288,7 +281,6 @@ result = gather_vector(result_dist)
 
 @test result == ref
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI hcat")
@@ -313,7 +305,6 @@ expected_local = hcat(v1dist.v, v2dist.v, v3dist.v)
 @test result_dist.A == expected_local
 @test size(result_dist) == (10, 3)
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] ComplexF64 cat")
@@ -337,7 +328,6 @@ result = gather_sparse(result_dist)
 
 @test result == ref
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] blockdiag")
@@ -360,7 +350,6 @@ result = gather_sparse(result_dist)
 @test result == ref
 @test size(result) == (8 + 5 + 4, 6 + 7 + 3)
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] blockdiag ComplexF64")
@@ -380,7 +369,6 @@ result = gather_sparse(result_dist)
 
 @test result == ref
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI vcat")
@@ -408,7 +396,6 @@ my_row_start = result_dist.row_partition[rank + 1]
 my_row_end = result_dist.row_partition[rank + 2] - 1
 @test result_dist.A == ref[my_row_start:my_row_end, :]
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI hcat")
@@ -435,7 +422,6 @@ my_row_start = result_dist.row_partition[rank + 1]
 my_row_end = result_dist.row_partition[rank + 2] - 1
 @test result_dist.A == ref[my_row_start:my_row_end, :]
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] MatrixMPI cat dims=(2,2)")
@@ -464,7 +450,6 @@ my_row_start = result_dist.row_partition[rank + 1]
 my_row_end = result_dist.row_partition[rank + 2] - 1
 @test result_dist.A == ref[my_row_start:my_row_end, :]
 
-MPI.Barrier(comm)
 
 if rank == 0
     println("[test] VectorMPI cat with tuple dims")
@@ -508,7 +493,6 @@ result_gathered = gather_vector(result_single)
 
 @test result_gathered == v_single
 
-MPI.Barrier(comm)
 
 end  # QuietTestSet
 
@@ -528,7 +512,6 @@ if rank == 0
     flush(stdout)
 end
 
-MPI.Barrier(comm)
 MPI.Finalize()
 
 if global_counts[2] > 0 || global_counts[3] > 0
