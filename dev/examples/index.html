@@ -6,9 +6,6 @@ using LinearAlgebraMPI
 using SparseArrays
 using LinearAlgebra
 
-comm = MPI.COMM_WORLD
-rank = MPI.Comm_rank(comm)
-
 # Create a tridiagonal matrix (same on all ranks)
 n = 100
 I = [1:n; 1:n-1; 2:n]
@@ -32,9 +29,7 @@ C_ref = A * B
 C_ref_dist = SparseMatrixMPI{Float64}(C_ref)
 err = norm(Cdist - C_ref_dist, Inf)
 
-if rank == 0
-    println(&quot;Multiplication error: $err&quot;)
-end
+println(io0(), &quot;Multiplication error: $err&quot;)
 
 MPI.Finalize()</code></pre><h3 id="Non-Square-Matrices"><a class="docs-heading-anchor" href="#Non-Square-Matrices">Non-Square Matrices</a><a id="Non-Square-Matrices-1"></a><a class="docs-heading-anchor-permalink" href="#Non-Square-Matrices" title="Permalink"></a></h3><pre><code class="language-julia hljs">using MPI
 MPI.Init()
@@ -42,8 +37,6 @@ MPI.Init()
 using LinearAlgebraMPI
 using SparseArrays
 using LinearAlgebra
-
-rank = MPI.Comm_rank(MPI.COMM_WORLD)
 
 # A is 6x8, B is 8x10, result is 6x10
 m, k, n = 6, 8, 10
@@ -65,9 +58,7 @@ Cdist = Adist * Bdist
 
 @assert size(Cdist) == (m, n)
 
-if rank == 0
-    println(&quot;Result size: $(size(Cdist))&quot;)
-end
+println(io0(), &quot;Result size: $(size(Cdist))&quot;)
 
 MPI.Finalize()</code></pre><h2 id="Complex-Matrices"><a class="docs-heading-anchor" href="#Complex-Matrices">Complex Matrices</a><a id="Complex-Matrices-1"></a><a class="docs-heading-anchor-permalink" href="#Complex-Matrices" title="Permalink"></a></h2><pre><code class="language-julia hljs">using MPI
 MPI.Init()
@@ -75,8 +66,6 @@ MPI.Init()
 using LinearAlgebraMPI
 using SparseArrays
 using LinearAlgebra
-
-rank = MPI.Comm_rank(MPI.COMM_WORLD)
 
 n = 8
 I = [1:n; 1:n-1; 2:n]
@@ -106,9 +95,7 @@ Aadj = Adist&#39;
 # Using adjoint in multiplication (materializes automatically)
 result = Aadj * Bdist
 
-if rank == 0
-    println(&quot;Complex matrix operations completed&quot;)
-end
+println(io0(), &quot;Complex matrix operations completed&quot;)
 
 MPI.Finalize()</code></pre><h2 id="Addition-and-Subtraction"><a class="docs-heading-anchor" href="#Addition-and-Subtraction">Addition and Subtraction</a><a id="Addition-and-Subtraction-1"></a><a class="docs-heading-anchor-permalink" href="#Addition-and-Subtraction" title="Permalink"></a></h2><pre><code class="language-julia hljs">using MPI
 MPI.Init()
@@ -116,8 +103,6 @@ MPI.Init()
 using LinearAlgebraMPI
 using SparseArrays
 using LinearAlgebra
-
-rank = MPI.Comm_rank(MPI.COMM_WORLD)
 
 n = 8
 
@@ -147,9 +132,7 @@ Ddist = Adist - Bdist
 C_ref_dist = SparseMatrixMPI{Float64}(A + B)
 err = norm(Cdist - C_ref_dist, Inf)
 
-if rank == 0
-    println(&quot;Addition error: $err&quot;)
-end
+println(io0(), &quot;Addition error: $err&quot;)
 
 MPI.Finalize()</code></pre><h2 id="Transpose-Operations"><a class="docs-heading-anchor" href="#Transpose-Operations">Transpose Operations</a><a id="Transpose-Operations-1"></a><a class="docs-heading-anchor-permalink" href="#Transpose-Operations" title="Permalink"></a></h2><h3 id="Lazy-Transpose"><a class="docs-heading-anchor" href="#Lazy-Transpose">Lazy Transpose</a><a id="Lazy-Transpose-1"></a><a class="docs-heading-anchor-permalink" href="#Lazy-Transpose" title="Permalink"></a></h3><p>The <code>transpose</code> function creates a lazy wrapper without transposing the data. This is efficient because the actual transpose is only computed when needed:</p><pre><code class="language-julia hljs">using MPI
 MPI.Init()
@@ -157,8 +140,6 @@ MPI.Init()
 using LinearAlgebraMPI
 using SparseArrays
 using LinearAlgebra
-
-rank = MPI.Comm_rank(MPI.COMM_WORLD)
 
 m, n = 8, 6
 I_C = [1, 2, 3, 4, 5, 6, 7, 8, 1, 3]
@@ -178,9 +159,7 @@ Ddist = SparseMatrixMPI{Float64}(D)
 # This is computed efficiently without explicitly transposing
 result = transpose(Cdist) * transpose(Ddist)
 
-if rank == 0
-    println(&quot;Lazy transpose multiplication completed&quot;)
-end
+println(io0(), &quot;Lazy transpose multiplication completed&quot;)
 
 MPI.Finalize()</code></pre><h3 id="Transpose-in-Multiplication"><a class="docs-heading-anchor" href="#Transpose-in-Multiplication">Transpose in Multiplication</a><a id="Transpose-in-Multiplication-1"></a><a class="docs-heading-anchor-permalink" href="#Transpose-in-Multiplication" title="Permalink"></a></h3><pre><code class="language-julia hljs">using MPI
 MPI.Init()
@@ -188,8 +167,6 @@ MPI.Init()
 using LinearAlgebraMPI
 using SparseArrays
 using LinearAlgebra
-
-rank = MPI.Comm_rank(MPI.COMM_WORLD)
 
 # A is 8x6, so A&#39; is 6x8
 # B is 8x10, so A&#39; * B is 6x10
@@ -216,9 +193,7 @@ ref = sparse(A&#39;) * B
 ref_dist = SparseMatrixMPI{Float64}(ref)
 err = norm(result_dist - ref_dist, Inf)
 
-if rank == 0
-    println(&quot;transpose(A) * B error: $err&quot;)
-end
+println(io0(), &quot;transpose(A) * B error: $err&quot;)
 
 MPI.Finalize()</code></pre><h2 id="Scalar-Multiplication"><a class="docs-heading-anchor" href="#Scalar-Multiplication">Scalar Multiplication</a><a id="Scalar-Multiplication-1"></a><a class="docs-heading-anchor-permalink" href="#Scalar-Multiplication" title="Permalink"></a></h2><pre><code class="language-julia hljs">using MPI
 MPI.Init()
@@ -226,8 +201,6 @@ MPI.Init()
 using LinearAlgebraMPI
 using SparseArrays
 using LinearAlgebra
-
-rank = MPI.Comm_rank(MPI.COMM_WORLD)
 
 m, n = 6, 8
 I = [1, 2, 3, 4, 5, 6, 1, 3]
@@ -251,9 +224,7 @@ ref_dist = SparseMatrixMPI{Float64}(a * A)
 err1 = norm(result1 - ref_dist, Inf)
 err2 = norm(result2 - ref_dist, Inf)
 
-if rank == 0
-    println(&quot;Scalar multiplication errors: $err1, $err2&quot;)
-end
+println(io0(), &quot;Scalar multiplication errors: $err1, $err2&quot;)
 
 MPI.Finalize()</code></pre><h2 id="Computing-Norms"><a class="docs-heading-anchor" href="#Computing-Norms">Computing Norms</a><a id="Computing-Norms-1"></a><a class="docs-heading-anchor-permalink" href="#Computing-Norms" title="Permalink"></a></h2><pre><code class="language-julia hljs">using MPI
 MPI.Init()
@@ -261,8 +232,6 @@ MPI.Init()
 using LinearAlgebraMPI
 using SparseArrays
 using LinearAlgebra
-
-rank = MPI.Comm_rank(MPI.COMM_WORLD)
 
 m, n = 6, 8
 I = [1, 2, 3, 4, 5, 6, 1, 3, 2, 4]
@@ -282,14 +251,12 @@ p_norm = norm(Adist, 3)        # General p-norm
 op_1 = opnorm(Adist, 1)        # Max absolute column sum
 op_inf = opnorm(Adist, Inf)    # Max absolute row sum
 
-if rank == 0
-    println(&quot;Frobenius norm: $frob_norm&quot;)
-    println(&quot;1-norm: $one_norm&quot;)
-    println(&quot;Inf-norm: $inf_norm&quot;)
-    println(&quot;3-norm: $p_norm&quot;)
-    println(&quot;Operator 1-norm: $op_1&quot;)
-    println(&quot;Operator Inf-norm: $op_inf&quot;)
-end
+println(io0(), &quot;Frobenius norm: $frob_norm&quot;)
+println(io0(), &quot;1-norm: $one_norm&quot;)
+println(io0(), &quot;Inf-norm: $inf_norm&quot;)
+println(io0(), &quot;3-norm: $p_norm&quot;)
+println(io0(), &quot;Operator 1-norm: $op_1&quot;)
+println(io0(), &quot;Operator Inf-norm: $op_inf&quot;)
 
 MPI.Finalize()</code></pre><h2 id="Iterative-Methods-Example"><a class="docs-heading-anchor" href="#Iterative-Methods-Example">Iterative Methods Example</a><a id="Iterative-Methods-Example-1"></a><a class="docs-heading-anchor-permalink" href="#Iterative-Methods-Example" title="Permalink"></a></h2><p>Here&#39;s an example of using LinearAlgebraMPI.jl for power iteration to find the dominant eigenvalue:</p><pre><code class="language-julia hljs">using MPI
 MPI.Init()
@@ -297,9 +264,6 @@ MPI.Init()
 using LinearAlgebraMPI
 using SparseArrays
 using LinearAlgebra
-
-comm = MPI.COMM_WORLD
-rank = MPI.Comm_rank(comm)
 
 # Create a symmetric positive definite matrix
 n = 100
@@ -320,10 +284,8 @@ A2dist = Adist * Adist
 # Compute the Frobenius norm of A^2
 norm_A2 = norm(A2dist)
 
-if rank == 0
-    println(&quot;||A^2||_F = $norm_A2&quot;)
-    # For SPD matrices, this relates to the eigenvalues
-end
+println(io0(), &quot;||A^2||_F = $norm_A2&quot;)
+# For SPD matrices, this relates to the eigenvalues
 
 MPI.Finalize()</code></pre><h2 id="Solving-Linear-Systems"><a class="docs-heading-anchor" href="#Solving-Linear-Systems">Solving Linear Systems</a><a id="Solving-Linear-Systems-1"></a><a class="docs-heading-anchor-permalink" href="#Solving-Linear-Systems" title="Permalink"></a></h2><p>LinearAlgebraMPI provides distributed sparse direct solvers using the multifrontal method.</p><h3 id="LDLT-Factorization-(Symmetric-Matrices)"><a class="docs-heading-anchor" href="#LDLT-Factorization-(Symmetric-Matrices)">LDLT Factorization (Symmetric Matrices)</a><a id="LDLT-Factorization-(Symmetric-Matrices)-1"></a><a class="docs-heading-anchor-permalink" href="#LDLT-Factorization-(Symmetric-Matrices)" title="Permalink"></a></h3><pre><code class="language-julia hljs">using MPI
 MPI.Init()
@@ -331,9 +293,6 @@ MPI.Init()
 using LinearAlgebraMPI
 using SparseArrays
 using LinearAlgebra
-
-comm = MPI.COMM_WORLD
-rank = MPI.Comm_rank(comm)
 
 # Create a symmetric positive definite tridiagonal matrix
 n = 100
@@ -361,9 +320,7 @@ x = F \ b
 x_full = Vector(x)
 residual = norm(A * x_full - ones(n), Inf)
 
-if rank == 0
-    println(&quot;LDLT solve residual: $residual&quot;)
-end
+println(io0(), &quot;LDLT solve residual: $residual&quot;)
 
 MPI.Finalize()</code></pre><h3 id="LU-Factorization-(General-Matrices)"><a class="docs-heading-anchor" href="#LU-Factorization-(General-Matrices)">LU Factorization (General Matrices)</a><a id="LU-Factorization-(General-Matrices)-1"></a><a class="docs-heading-anchor-permalink" href="#LU-Factorization-(General-Matrices)" title="Permalink"></a></h3><pre><code class="language-julia hljs">using MPI
 MPI.Init()
@@ -371,9 +328,6 @@ MPI.Init()
 using LinearAlgebraMPI
 using SparseArrays
 using LinearAlgebra
-
-comm = MPI.COMM_WORLD
-rank = MPI.Comm_rank(comm)
 
 # Create a general (non-symmetric) tridiagonal matrix
 n = 100
@@ -394,9 +348,7 @@ x = solve(F, b)
 x_full = Vector(x)
 residual = norm(A * x_full - ones(n), Inf)
 
-if rank == 0
-    println(&quot;LU solve residual: $residual&quot;)
-end
+println(io0(), &quot;LU solve residual: $residual&quot;)
 
 MPI.Finalize()</code></pre><h3 id="Symmetric-Indefinite-Matrices"><a class="docs-heading-anchor" href="#Symmetric-Indefinite-Matrices">Symmetric Indefinite Matrices</a><a id="Symmetric-Indefinite-Matrices-1"></a><a class="docs-heading-anchor-permalink" href="#Symmetric-Indefinite-Matrices" title="Permalink"></a></h3><p>LDLT uses Bunch-Kaufman pivoting to handle symmetric indefinite matrices:</p><pre><code class="language-julia hljs">using MPI
 MPI.Init()
@@ -404,8 +356,6 @@ MPI.Init()
 using LinearAlgebraMPI
 using SparseArrays
 using LinearAlgebra
-
-rank = MPI.Comm_rank(MPI.COMM_WORLD)
 
 # Symmetric indefinite matrix (alternating signs on diagonal)
 n = 50
@@ -424,9 +374,7 @@ x = solve(F, b)
 x_full = Vector(x)
 residual = norm(A * x_full - collect(1.0:n), Inf)
 
-if rank == 0
-    println(&quot;Indefinite LDLT residual: $residual&quot;)
-end
+println(io0(), &quot;Indefinite LDLT residual: $residual&quot;)
 
 MPI.Finalize()</code></pre><h3 id="Reusing-Symbolic-Factorization"><a class="docs-heading-anchor" href="#Reusing-Symbolic-Factorization">Reusing Symbolic Factorization</a><a id="Reusing-Symbolic-Factorization-1"></a><a class="docs-heading-anchor-permalink" href="#Reusing-Symbolic-Factorization" title="Permalink"></a></h3><p>For sequences of matrices with the same sparsity pattern, the symbolic factorization is cached and reused:</p><pre><code class="language-julia hljs">using MPI
 MPI.Init()
@@ -434,8 +382,6 @@ MPI.Init()
 using LinearAlgebraMPI
 using SparseArrays
 using LinearAlgebra
-
-rank = MPI.Comm_rank(MPI.COMM_WORLD)
 
 n = 100
 I = [1:n; 1:n-1; 2:n]
@@ -462,20 +408,16 @@ b = VectorMPI(ones(n))
 x1 = solve(F1, b)
 x2 = solve(F2, b)
 
-if rank == 0
-    x1_full = Vector(x1)
-    x2_full = Vector(x2)
-    println(&quot;F1 residual: &quot;, norm(A1 * x1_full - ones(n), Inf))
-    println(&quot;F2 residual: &quot;, norm(A2 * x2_full - ones(n), Inf))
-end
+x1_full = Vector(x1)
+x2_full = Vector(x2)
+println(io0(), &quot;F1 residual: &quot;, norm(A1 * x1_full - ones(n), Inf))
+println(io0(), &quot;F2 residual: &quot;, norm(A2 * x2_full - ones(n), Inf))
 
 MPI.Finalize()</code></pre><h2 id="Plan-Caching-and-Management"><a class="docs-heading-anchor" href="#Plan-Caching-and-Management">Plan Caching and Management</a><a id="Plan-Caching-and-Management-1"></a><a class="docs-heading-anchor-permalink" href="#Plan-Caching-and-Management" title="Permalink"></a></h2><pre><code class="language-julia hljs">using MPI
 MPI.Init()
 
 using LinearAlgebraMPI
 using SparseArrays
-
-rank = MPI.Comm_rank(MPI.COMM_WORLD)
 
 n = 100
 A = spdiagm(0 =&gt; 2.0*ones(n), 1 =&gt; -ones(n-1), -1 =&gt; -ones(n-1))
@@ -500,17 +442,13 @@ clear_plan_cache!()  # Clears all caches including factorization
 # clear_symbolic_cache!()           # Symbolic factorizations only
 # clear_factorization_plan_cache!() # Factorization plans only
 
-if rank == 0
-    println(&quot;Cached multiplication completed&quot;)
-end
+println(io0(), &quot;Cached multiplication completed&quot;)
 
 MPI.Finalize()</code></pre><h2 id="Dense-Matrix-Operations-with-mapslices"><a class="docs-heading-anchor" href="#Dense-Matrix-Operations-with-mapslices">Dense Matrix Operations with mapslices</a><a id="Dense-Matrix-Operations-with-mapslices-1"></a><a class="docs-heading-anchor-permalink" href="#Dense-Matrix-Operations-with-mapslices" title="Permalink"></a></h2><p>The <code>mapslices</code> function applies a function to each row or column of a distributed dense matrix. This is useful for computing row-wise or column-wise statistics.</p><h3 id="Row-wise-Operations-(dims2)"><a class="docs-heading-anchor" href="#Row-wise-Operations-(dims2)">Row-wise Operations (dims=2)</a><a id="Row-wise-Operations-(dims2)-1"></a><a class="docs-heading-anchor-permalink" href="#Row-wise-Operations-(dims2)" title="Permalink"></a></h3><p>Row-wise operations are local - no MPI communication is needed since rows are already distributed:</p><pre><code class="language-julia hljs">using MPI
 MPI.Init()
 
 using LinearAlgebraMPI
 using LinearAlgebra
-
-rank = MPI.Comm_rank(MPI.COMM_WORLD)
 
 # Create a deterministic dense matrix (same on all ranks)
 m, n = 100, 10
@@ -523,17 +461,13 @@ Adist = MatrixMPI(A_global)
 # This transforms 100×10 matrix to 100×3 matrix
 row_stats = mapslices(x -&gt; [norm(x), maximum(x), sum(x)], Adist; dims=2)
 
-if rank == 0
-    println(&quot;Row statistics shape: $(size(row_stats))&quot;)  # (100, 3)
-end
+println(io0(), &quot;Row statistics shape: $(size(row_stats))&quot;)  # (100, 3)
 
 MPI.Finalize()</code></pre><h3 id="Column-wise-Operations-(dims1)"><a class="docs-heading-anchor" href="#Column-wise-Operations-(dims1)">Column-wise Operations (dims=1)</a><a id="Column-wise-Operations-(dims1)-1"></a><a class="docs-heading-anchor-permalink" href="#Column-wise-Operations-(dims1)" title="Permalink"></a></h3><p>Column-wise operations require MPI communication to gather each full column:</p><pre><code class="language-julia hljs">using MPI
 MPI.Init()
 
 using LinearAlgebraMPI
 using LinearAlgebra
-
-rank = MPI.Comm_rank(MPI.COMM_WORLD)
 
 # Create a deterministic dense matrix
 m, n = 100, 10
@@ -545,17 +479,13 @@ Adist = MatrixMPI(A_global)
 # This transforms 100×10 matrix to 2×10 matrix
 col_stats = mapslices(x -&gt; [norm(x), maximum(x)], Adist; dims=1)
 
-if rank == 0
-    println(&quot;Column statistics shape: $(size(col_stats))&quot;)  # (2, 10)
-end
+println(io0(), &quot;Column statistics shape: $(size(col_stats))&quot;)  # (2, 10)
 
 MPI.Finalize()</code></pre><h3 id="Use-Case:-Replacing-vcat(f.(eachrow(A))...)"><a class="docs-heading-anchor" href="#Use-Case:-Replacing-vcat(f.(eachrow(A))...)">Use Case: Replacing vcat(f.(eachrow(A))...)</a><a id="Use-Case:-Replacing-vcat(f.(eachrow(A))...)-1"></a><a class="docs-heading-anchor-permalink" href="#Use-Case:-Replacing-vcat(f.(eachrow(A))...)" title="Permalink"></a></h3><p>The standard Julia pattern <code>vcat(f.(eachrow(A))...)</code> doesn&#39;t work with distributed matrices because the type information is lost after broadcasting. Use <code>mapslices</code> instead:</p><pre><code class="language-julia hljs">using MPI
 MPI.Init()
 
 using LinearAlgebraMPI
 using LinearAlgebra
-
-rank = MPI.Comm_rank(MPI.COMM_WORLD)
 
 # Standard Julia pattern (for comparison):
 # A = randn(5, 2)
@@ -571,8 +501,6 @@ Adist = MatrixMPI(A_global)
 g(x) = [norm(x), maximum(x)]
 Bdist = mapslices(g, Adist; dims=2)
 
-if rank == 0
-    println(&quot;Result: $(size(Bdist))&quot;)  # (100, 2)
-end
+println(io0(), &quot;Result: $(size(Bdist))&quot;)  # (100, 2)
 
-MPI.Finalize()</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../getting-started/">« Getting Started</a><a class="docs-footer-nextpage" href="../algorithms/">Algorithms »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Saturday 13 December 2025 23:16">Saturday 13 December 2025</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+MPI.Finalize()</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../getting-started/">« Getting Started</a><a class="docs-footer-nextpage" href="../algorithms/">Algorithms »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Saturday 13 December 2025 23:48">Saturday 13 December 2025</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
