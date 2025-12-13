@@ -628,6 +628,106 @@ if rank == 0
 end
 @test err_multi < TOL
 
+MPI.Barrier(comm)
+
+# Test 20: LU with 2D Laplacian - exercises extend_add! (unsymmetric version)
+if rank == 0
+    println("[test] LU factorization - 2D Laplacian (extend_add!)")
+    flush(stdout)
+end
+
+A_2d_lu_full = create_2d_laplacian(5, 5)  # 25-element grid
+A_2d_lu = SparseMatrixMPI{Float64}(A_2d_lu_full)
+
+F_2d_lu = lu(A_2d_lu)
+
+b_2d_lu_full = ones(25)
+b_2d_lu = VectorMPI(b_2d_lu_full)
+x_2d_lu = solve(F_2d_lu, b_2d_lu)
+
+x_2d_lu_full = Vector(x_2d_lu)
+residual_2d_lu = A_2d_lu_full * x_2d_lu_full - b_2d_lu_full
+err_2d_lu = norm(residual_2d_lu, Inf)
+
+if rank == 0
+    println("  2D Laplacian LU residual: $err_2d_lu")
+end
+@test err_2d_lu < TOL
+
+MPI.Barrier(comm)
+
+# Test 21: LU with partial pivoting - matrix requiring row swaps
+# Off-diagonal elements larger than diagonal forces pivot selection
+if rank == 0
+    println("[test] LU with row pivoting")
+    flush(stdout)
+end
+
+n_piv = 6
+A_piv = zeros(n_piv, n_piv)
+for i in 1:n_piv
+    A_piv[i, i] = 0.1  # Small diagonal
+    if i < n_piv
+        A_piv[i+1, i] = 2.0  # Large sub-diagonal (will be selected as pivot)
+        A_piv[i, i+1] = 1.5  # Upper diagonal
+    end
+end
+# Make it non-singular by adjusting
+A_piv[n_piv, n_piv] = 2.0
+A_piv_sp = sparse(A_piv)
+A_piv_mpi = SparseMatrixMPI{Float64}(A_piv_sp)
+
+F_piv = lu(A_piv_mpi)
+
+b_piv_full = ones(n_piv)
+b_piv = VectorMPI(b_piv_full)
+x_piv = solve(F_piv, b_piv)
+x_piv_full = Vector(x_piv)
+err_piv = norm(A_piv_sp * x_piv_full - b_piv_full, Inf)
+
+if rank == 0
+    println("  LU with pivoting residual: $err_piv")
+end
+@test err_piv < TOL
+
+MPI.Barrier(comm)
+
+# Test 22: LU with near-zero pivot (triggers small pivot warning path)
+if rank == 0
+    println("[test] LU with small pivot")
+    flush(stdout)
+end
+
+n_small = 4
+A_small = zeros(n_small, n_small)
+A_small[1, 1] = 1e-20  # Very small pivot
+A_small[1, 2] = 1e-21  # Even smaller off-diagonal so no swap
+A_small[2, 1] = 1e-21
+A_small[2, 2] = 1.0
+A_small[2, 3] = -0.5
+A_small[3, 2] = -0.5
+A_small[3, 3] = 1.0
+A_small[3, 4] = -0.5
+A_small[4, 3] = -0.5
+A_small[4, 4] = 1.0
+A_small_sp = sparse(A_small)
+A_small_mpi = SparseMatrixMPI{Float64}(A_small_sp)
+
+# This should trigger the small pivot warning but still succeed
+F_small = lu(A_small_mpi)
+
+b_small_full = [1e-20, 1.0, 1.0, 1.0]  # Scale first element with matrix
+b_small = VectorMPI(b_small_full)
+x_small = solve(F_small, b_small)
+x_small_full = Vector(x_small)
+err_small = norm(A_small_sp * x_small_full - b_small_full, Inf)
+
+if rank == 0
+    println("  LU with small pivot residual: $err_small")
+end
+# Use looser tolerance due to ill-conditioning
+@test err_small < 1e-6
+
 end  # QuietTestSet
 
 # Aggregate results across ranks

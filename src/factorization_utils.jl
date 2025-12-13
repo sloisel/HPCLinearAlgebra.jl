@@ -68,29 +68,39 @@ function initialize_frontal(A::SparseMatrixCSC{T},
 end
 
 """
-    extend_add!(F, update, child_rows)
+    extend_add!(F, update, child_rows, child_cols)
 
 Assemble (extend-add) an update matrix from a child into frontal matrix F.
+
+For LU factorization with partial pivoting, child_rows and child_cols may differ
+because row pivoting permutes row_indices but not col_indices.
 """
 function extend_add!(F::FrontalMatrix{T},
                      update::Matrix{T},
-                     child_rows::Vector{Int}) where T
-    # Create mapping from child rows to parent rows
+                     child_rows::Vector{Int},
+                     child_cols::Vector{Int}) where T
+    # Create mappings from global indices to parent local positions
     parent_row_map = Dict{Int, Int}()
     for (local_idx, global_idx) in enumerate(F.row_indices)
         parent_row_map[global_idx] = local_idx
     end
 
+    parent_col_map = Dict{Int, Int}()
+    for (local_idx, global_idx) in enumerate(F.col_indices)
+        parent_col_map[global_idx] = local_idx
+    end
+
     # Scatter-add
-    nchild = size(update, 1)
-    for cj = 1:nchild
-        global_col = child_rows[cj]
-        if !haskey(parent_row_map, global_col)
+    nchild_rows = size(update, 1)
+    nchild_cols = size(update, 2)
+    for cj = 1:nchild_cols
+        global_col = child_cols[cj]
+        if !haskey(parent_col_map, global_col)
             continue
         end
-        pj = parent_row_map[global_col]
+        pj = parent_col_map[global_col]
 
-        for ci = 1:nchild
+        for ci = 1:nchild_rows
             global_row = child_rows[ci]
             if !haskey(parent_row_map, global_row)
                 continue
@@ -107,6 +117,10 @@ end
 
 Factor the fully summed part of the frontal matrix with partial pivoting.
 
+IMPORTANT: In multifrontal context, pivoting is restricted to the fully summed block
+(rows 1:nfs) to avoid complex interactions with update rows that belong to
+ancestor supernodes. This matches the approach used in LDLT factorization.
+
 Returns the pivot indices for each fully summed column.
 """
 function partial_factor!(F::FrontalMatrix{T}) where T
@@ -115,10 +129,11 @@ function partial_factor!(F::FrontalMatrix{T}) where T
     pivots = collect(1:nfs)
 
     for k = 1:nfs
-        # Partial pivoting: find max in column k, rows k:nrows
+        # Partial pivoting: find max in column k, restricted to rows k:nfs
+        # (not k:nrows, to avoid swapping with update rows)
         piv_row = k
         piv_val = abs(F.F[k, k])
-        for i = k+1:nrows
+        for i = k+1:nfs
             if abs(F.F[i, k]) > piv_val
                 piv_row = i
                 piv_val = abs(F.F[i, k])

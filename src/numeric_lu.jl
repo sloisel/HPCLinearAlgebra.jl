@@ -64,6 +64,7 @@ function numerical_factorization_lu(A::SparseMatrixMPI{T},
     # Storage for update matrices (keyed by supernode index)
     updates = Dict{Int, Matrix{T}}()
     update_rows = Dict{Int, Vector{Int}}()
+    update_cols = Dict{Int, Vector{Int}}()  # Column indices (may differ from rows after pivoting)
 
     # Accumulators for L and U in COO format (each rank stores its portion)
     L_I = Int[]
@@ -93,9 +94,10 @@ function numerical_factorization_lu(A::SparseMatrixMPI{T},
             # Note: All children are on the same rank (subtrees assigned to single ranks)
             for child_sidx in symbolic.snode_children[sidx]
                 if haskey(updates, child_sidx)
-                    extend_add!(F, updates[child_sidx], update_rows[child_sidx])
+                    extend_add!(F, updates[child_sidx], update_rows[child_sidx], update_cols[child_sidx])
                     delete!(updates, child_sidx)
                     delete!(update_rows, child_sidx)
+                    delete!(update_cols, child_sidx)
                 end
             end
 
@@ -119,7 +121,9 @@ function numerical_factorization_lu(A::SparseMatrixMPI{T},
                 nrows = length(info.row_indices)
                 if nrows > nfs
                     updates[sidx] = copy(F.F[nfs+1:nrows, nfs+1:nrows])
+                    # After pivoting: row_indices is permuted, col_indices is not
                     update_rows[sidx] = copy(F.row_indices[nfs+1:nrows])
+                    update_cols[sidx] = copy(F.col_indices[nfs+1:nrows])
                 end
             end
         end

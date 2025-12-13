@@ -1,17 +1,20 @@
 """
 Distributed solve routines for LU factorization.
 
-Given L * U * x = P * b where:
-- L is unit lower triangular (distributed)
-- U is upper triangular (distributed)
-- P is the row permutation from pivoting
+The factorization gives: L * U = Pr_elim * Ap_elim where:
+- Ap = P' * A * P is the AMD-reordered matrix (P is fill-reducing permutation)
+- Ap_elim = Ap reordered to elimination order via elim_to_global
+- Pr_elim is the row permutation from pivoting, in elimination order indices
+- L and U are stored in elimination order indices (1 to n)
 
-Solve by:
-1. Apply fill-reducing permutation: work = b[perm]
-2. Apply row pivot permutation: work2[k] = work[row_perm[k]]
-3. Forward solve: L * y = work2 (distributed)
-4. Backward solve: U * x = y (distributed)
-5. Apply inverse permutations
+To solve A * x = b:
+1. Apply AMD permutation: bp = P' * b = b[perm]
+2. Reorder to elimination order: b_elim[k] = bp[elim_to_global[k]]
+3. Apply pivot permutation: c[k] = b_elim[row_perm_elim[k]] where row_perm_elim maps elim indices
+4. Forward solve: L * y = c (both in elimination order)
+5. Backward solve: U * z = y (both in elimination order)
+6. Reorder from elimination to global: zp[elim_to_global[k]] = z[k]
+7. Apply inverse AMD permutation: x = P * zp = zp[invperm]
 """
 
 using MPI
@@ -32,6 +35,11 @@ end
     solve!(x::VectorMPI{T}, F::LUFactorizationMPI{T}, b::VectorMPI{T})
 
 Solve A*x = b in-place using LU factorization.
+
+L and U are stored in elimination order. The solve works entirely in elimination order:
+1. Transform RHS to elimination order with pivoting
+2. Triangular solves in elimination order
+3. Transform solution back to original order
 """
 function solve!(x::VectorMPI{T}, F::LUFactorizationMPI{T}, b::VectorMPI{T}) where T
     comm = MPI.COMM_WORLD
@@ -39,39 +47,82 @@ function solve!(x::VectorMPI{T}, F::LUFactorizationMPI{T}, b::VectorMPI{T}) wher
     n = F.symbolic.n
 
     # Gather b to all ranks for the solve
-    # (A more optimized version would do this distributedly)
     b_full = Vector(b)
 
-    # Step 1: Apply fill-reducing permutation
-    work = Vector{T}(undef, n)
+    # Step 1: Apply AMD permutation: bp[i] = b[perm[i]]
+    bp = Vector{T}(undef, n)
     for i = 1:n
-        work[i] = b_full[F.symbolic.perm[i]]
+        bp[i] = b_full[F.symbolic.perm[i]]
     end
 
-    # Step 2: Apply row pivot permutation
-    work2 = Vector{T}(undef, n)
+    # Step 2: Reorder to elimination order: b_elim[k] = bp[elim_to_global[k]]
+    b_elim = Vector{T}(undef, n)
     for k = 1:n
-        work2[k] = work[F.row_perm[k]]
+        b_elim[k] = bp[F.symbolic.elim_to_global[k]]
+    end
+
+    # Step 3: Apply pivot permutation in elimination order
+    # row_perm[k] is the global row that became pivot at elimination step k
+    # We need to map this to elimination order
+    c = Vector{T}(undef, n)
+    for k = 1:n
+        # row_perm[k] is in global (AMD) space, convert to elimination space
+        src_elim = F.symbolic.global_to_elim[F.row_perm[k]]
+        c[k] = b_elim[src_elim]
     end
 
     # Gather L and U to all ranks for the solve
     L_full, U_full = gather_L_U(F)
 
-    # Step 3: Forward solve (in elimination order)
-    forward_solve_ordered!(work2, L_full, F.symbolic.elim_to_global)
-
-    # Step 4: Backward solve (in reverse elimination order)
-    backward_solve_ordered!(work2, U_full, F.symbolic.elim_to_global)
-
-    # Step 5: Apply inverse row pivot permutation
+    # Step 4: Forward solve in elimination order: L * y = c
+    # L is indexed by elimination order, so we iterate k=1..n
+    y = copy(c)
     for k = 1:n
-        work[F.row_perm[k]] = work2[k]
+        yk = y[k]
+        if yk != zero(T)
+            for idx in nzrange(L_full, k)
+                row = rowvals(L_full)[idx]
+                if row != k
+                    y[row] -= nonzeros(L_full)[idx] * yk
+                end
+            end
+        end
     end
 
-    # Step 6: Apply inverse fill-reducing permutation
+    # Step 5: Backward solve in elimination order: U * z = y
+    z = copy(y)
+    for k = n:-1:1
+        # Find diagonal
+        diag_val = zero(T)
+        for idx in nzrange(U_full, k)
+            if rowvals(U_full)[idx] == k
+                diag_val = nonzeros(U_full)[idx]
+                break
+            end
+        end
+        if diag_val == zero(T)
+            error("Zero diagonal in U at elimination step $k")
+        end
+        z[k] /= diag_val
+        zk = z[k]
+        for idx in nzrange(U_full, k)
+            row = rowvals(U_full)[idx]
+            if row != k
+                z[row] -= nonzeros(U_full)[idx] * zk
+            end
+        end
+    end
+
+    # Step 6: Reorder from elimination to global (AMD) order
+    zp = Vector{T}(undef, n)
+    for k = 1:n
+        zp[F.symbolic.elim_to_global[k]] = z[k]
+    end
+
+    # Step 7: Apply inverse AMD permutation
     result = Vector{T}(undef, n)
     for i = 1:n
-        result[i] = work[F.symbolic.invperm[i]]
+        result[F.symbolic.perm[i]] = zp[i]
     end
 
     # Distribute result back to VectorMPI
@@ -113,12 +164,9 @@ end
 
 Solve transpose(A)*x = b in-place using LU factorization of A.
 
-If A = Q' R' L U R Q (with permutations Q=perm, R=row_perm), then
-transpose(A) = Q' R' U' L' R Q, and we solve by:
-1. Apply permutations: w = R * Q * b
-2. Forward solve with U': U' * y = w
-3. Backward solve with L': L' * z = y
-4. Apply inverse permutations: x = Q' * R' * z
+For transpose solve, we solve U' * L' * Pr * x_elim = b_elim.
+This means: forward solve U' y = b_elim, backward solve L' z = y,
+then apply inverse pivot permutation to z to get x_elim.
 """
 function solve_transpose!(x::VectorMPI{T}, F::LUFactorizationMPI{T}, b::VectorMPI{T}) where T
     comm = MPI.COMM_WORLD
@@ -127,36 +175,82 @@ function solve_transpose!(x::VectorMPI{T}, F::LUFactorizationMPI{T}, b::VectorMP
 
     b_full = Vector(b)
 
-    # Step 1: Apply fill-reducing permutation
-    work = Vector{T}(undef, n)
+    # Step 1: Apply AMD permutation: bp[i] = b[perm[i]]
+    bp = Vector{T}(undef, n)
     for i = 1:n
-        work[i] = b_full[F.symbolic.perm[i]]
+        bp[i] = b_full[F.symbolic.perm[i]]
     end
 
-    # Step 2: Apply row pivot permutation
-    work2 = Vector{T}(undef, n)
+    # Step 2: Reorder to elimination order (NO pivot permutation for transpose solve)
+    b_elim = Vector{T}(undef, n)
     for k = 1:n
-        work2[k] = work[F.row_perm[k]]
+        b_elim[k] = bp[F.symbolic.elim_to_global[k]]
     end
 
     # Gather L and U
     L_full, U_full = gather_L_U(F)
 
-    # Step 3: Forward solve with U' (U' is lower triangular)
-    forward_solve_transpose_U!(work2, U_full, F.symbolic.elim_to_global)
-
-    # Step 4: Backward solve with L' (L' is upper triangular, unit diagonal)
-    backward_solve_transpose_L!(work2, L_full, F.symbolic.elim_to_global)
-
-    # Step 5: Apply inverse row pivot permutation
+    # Step 3: Forward solve with U' (lower triangular in elim order): U' y = b_elim
+    y = copy(b_elim)
     for k = 1:n
-        work[F.row_perm[k]] = work2[k]
+        # Divide by diagonal
+        diag_val = zero(T)
+        for idx in nzrange(U_full, k)
+            if rowvals(U_full)[idx] == k
+                diag_val = nonzeros(U_full)[idx]
+                break
+            end
+        end
+        if diag_val == zero(T)
+            error("Zero diagonal in U at elimination step $k")
+        end
+        y[k] /= diag_val
+        yk = y[k]
+        # Update: for U', entry U[k,j] affects y[j] for j > k
+        for j = k+1:n
+            for idx in nzrange(U_full, j)
+                if rowvals(U_full)[idx] == k
+                    y[j] -= nonzeros(U_full)[idx] * yk
+                    break
+                end
+            end
+        end
     end
 
-    # Step 6: Apply inverse fill-reducing permutation
+    # Step 4: Backward solve with L' (upper triangular, unit diagonal): L' z = y
+    z = copy(y)
+    for k = n:-1:1
+        zk = z[k]
+        # Update: for L', entry L[k,j] affects z[j] for j < k
+        for j = 1:k-1
+            for idx in nzrange(L_full, j)
+                if rowvals(L_full)[idx] == k
+                    z[j] -= nonzeros(L_full)[idx] * zk
+                    break
+                end
+            end
+        end
+    end
+
+    # Step 5: Apply INVERSE pivot permutation to solution
+    # Forward pivot was: c[k] = b_elim[global_to_elim[row_perm[k]]]
+    # Inverse: x_elim[global_to_elim[row_perm[k]]] = z[k]
+    x_elim = Vector{T}(undef, n)
+    for k = 1:n
+        dest = F.symbolic.global_to_elim[F.row_perm[k]]
+        x_elim[dest] = z[k]
+    end
+
+    # Step 6: Reorder from elimination to global (AMD) order
+    xp = Vector{T}(undef, n)
+    for k = 1:n
+        xp[F.symbolic.elim_to_global[k]] = x_elim[k]
+    end
+
+    # Step 7: Apply inverse AMD permutation
     result = Vector{T}(undef, n)
     for i = 1:n
-        result[i] = work[F.symbolic.invperm[i]]
+        result[F.symbolic.perm[i]] = xp[i]
     end
 
     # Distribute result
@@ -183,7 +277,9 @@ end
 """
     solve_adjoint!(x::VectorMPI{T}, F::LUFactorizationMPI{T}, b::VectorMPI{T})
 
-Solve A'*x = b (adjoint) in-place using LU factorization of A.
+Solve A'*x = b (adjoint/conjugate transpose) in-place using LU factorization of A.
+
+Same as transpose solve but with conjugation of L and U values.
 """
 function solve_adjoint!(x::VectorMPI{T}, F::LUFactorizationMPI{T}, b::VectorMPI{T}) where T
     comm = MPI.COMM_WORLD
@@ -192,36 +288,80 @@ function solve_adjoint!(x::VectorMPI{T}, F::LUFactorizationMPI{T}, b::VectorMPI{
 
     b_full = Vector(b)
 
-    # Step 1: Apply fill-reducing permutation
-    work = Vector{T}(undef, n)
+    # Step 1: Apply AMD permutation: bp[i] = b[perm[i]]
+    bp = Vector{T}(undef, n)
     for i = 1:n
-        work[i] = b_full[F.symbolic.perm[i]]
+        bp[i] = b_full[F.symbolic.perm[i]]
     end
 
-    # Step 2: Apply row pivot permutation
-    work2 = Vector{T}(undef, n)
+    # Step 2: Reorder to elimination order (NO pivot permutation for adjoint solve)
+    b_elim = Vector{T}(undef, n)
     for k = 1:n
-        work2[k] = work[F.row_perm[k]]
+        b_elim[k] = bp[F.symbolic.elim_to_global[k]]
     end
 
     # Gather L and U
     L_full, U_full = gather_L_U(F)
 
-    # Step 3: Forward solve with U' (adjoint, lower triangular)
-    forward_solve_adjoint_U!(work2, U_full, F.symbolic.elim_to_global)
-
-    # Step 4: Backward solve with L' (adjoint, upper triangular, unit diagonal)
-    backward_solve_adjoint_L!(work2, L_full, F.symbolic.elim_to_global)
-
-    # Step 5: Apply inverse row pivot permutation
+    # Step 3: Forward solve with U' (lower triangular in elim order, conjugated): U' y = b_elim
+    y = copy(b_elim)
     for k = 1:n
-        work[F.row_perm[k]] = work2[k]
+        # Divide by conjugate of diagonal
+        diag_val = zero(T)
+        for idx in nzrange(U_full, k)
+            if rowvals(U_full)[idx] == k
+                diag_val = conj(nonzeros(U_full)[idx])
+                break
+            end
+        end
+        if diag_val == zero(T)
+            error("Zero diagonal in U at elimination step $k")
+        end
+        y[k] /= diag_val
+        yk = y[k]
+        # Update: for U', entry conj(U[k,j]) affects y[j] for j > k
+        for j = k+1:n
+            for idx in nzrange(U_full, j)
+                if rowvals(U_full)[idx] == k
+                    y[j] -= conj(nonzeros(U_full)[idx]) * yk
+                    break
+                end
+            end
+        end
     end
 
-    # Step 6: Apply inverse fill-reducing permutation
+    # Step 4: Backward solve with L' (upper triangular, unit diagonal, conjugated): L' z = y
+    z = copy(y)
+    for k = n:-1:1
+        zk = z[k]
+        # Update: for L', entry conj(L[k,j]) affects z[j] for j < k
+        for j = 1:k-1
+            for idx in nzrange(L_full, j)
+                if rowvals(L_full)[idx] == k
+                    z[j] -= conj(nonzeros(L_full)[idx]) * zk
+                    break
+                end
+            end
+        end
+    end
+
+    # Step 5: Apply INVERSE pivot permutation to solution
+    x_elim = Vector{T}(undef, n)
+    for k = 1:n
+        dest = F.symbolic.global_to_elim[F.row_perm[k]]
+        x_elim[dest] = z[k]
+    end
+
+    # Step 6: Reorder from elimination to global (AMD) order
+    xp = Vector{T}(undef, n)
+    for k = 1:n
+        xp[F.symbolic.elim_to_global[k]] = x_elim[k]
+    end
+
+    # Step 7: Apply inverse AMD permutation
     result = Vector{T}(undef, n)
     for i = 1:n
-        result[i] = work[F.symbolic.invperm[i]]
+        result[F.symbolic.perm[i]] = xp[i]
     end
 
     # Distribute result
@@ -254,249 +394,3 @@ function Base.:\(Fa::AdjointLU{T}, b::VectorMPI{T}) where T
     return solve_adjoint(Fa.parent, b)
 end
 
-# ============================================================================
-# Local Solve Routines (used after gathering)
-# ============================================================================
-
-"""
-    forward_solve_ordered!(x, L, elim_to_global)
-
-Solve L * y = x in-place, overwriting x with y.
-Processes columns in ELIMINATION ORDER (given by elim_to_global).
-"""
-function forward_solve_ordered!(x::AbstractVector{T}, L::SparseMatrixCSC{T},
-                                 elim_to_global::Vector{Int}) where T
-    n = length(x)
-
-    for k = 1:n
-        j = elim_to_global[k]  # Global column index at elimination step k
-        xj = x[j]
-        if xj != zero(T)
-            for i in nzrange(L, j)
-                row = rowvals(L)[i]
-                if row != j  # Off-diagonal only
-                    x[row] -= nonzeros(L)[i] * xj
-                end
-            end
-        end
-    end
-
-    return x
-end
-
-"""
-    backward_solve_ordered!(x, U, elim_to_global)
-
-Solve U * y = x in-place, overwriting x with y.
-Processes columns in REVERSE ELIMINATION ORDER.
-"""
-function backward_solve_ordered!(x::AbstractVector{T}, U::SparseMatrixCSC{T},
-                                  elim_to_global::Vector{Int}) where T
-    n = length(x)
-
-    for k = n:-1:1
-        j = elim_to_global[k]  # Global column index at elimination step k
-
-        # Find diagonal entry
-        diag_val = zero(T)
-        diag_row = 0
-        for i in nzrange(U, j)
-            row = rowvals(U)[i]
-            val = nonzeros(U)[i]
-            if row == j
-                diag_val = val
-                diag_row = row
-                break
-            elseif diag_row == 0
-                diag_val = val
-                diag_row = row
-            end
-        end
-
-        if diag_row == 0
-            for i in nzrange(U, j)
-                diag_row = rowvals(U)[i]
-                diag_val = nonzeros(U)[i]
-                break
-            end
-        end
-
-        if abs(diag_val) < eps(real(T))
-            error("Zero diagonal in U at column $j (step $k)")
-        end
-
-        x[diag_row] /= diag_val
-
-        # Update all other rows
-        for i in nzrange(U, j)
-            row = rowvals(U)[i]
-            if row != diag_row
-                x[row] -= nonzeros(U)[i] * x[diag_row]
-            end
-        end
-    end
-
-    return x
-end
-
-"""
-    apply_row_pivots!(x, row_perm)
-
-Apply row permutation from partial pivoting.
-"""
-function apply_row_pivots!(x::AbstractVector, row_perm::Vector{Int})
-    n = length(x)
-    temp = similar(x)
-    for i = 1:n
-        temp[i] = x[row_perm[i]]
-    end
-    copyto!(x, temp)
-    return x
-end
-
-# ============================================================================
-# Transpose/Adjoint Solve Helper Functions
-# ============================================================================
-
-"""
-    forward_solve_transpose_U!(x, U, elim_to_global)
-
-Solve U' * y = x in-place (U transpose).
-U' is lower triangular, so we process in forward order.
-"""
-function forward_solve_transpose_U!(x::AbstractVector{T}, U::SparseMatrixCSC{T},
-                                     elim_to_global::Vector{Int}) where T
-    n = length(x)
-
-    for k = 1:n
-        j = elim_to_global[k]
-
-        # Find diagonal and compute x[j] / U[j,j]
-        diag_val = zero(T)
-        for i in nzrange(U, j)
-            row = rowvals(U)[i]
-            if row == j
-                diag_val = nonzeros(U)[i]
-                break
-            end
-        end
-
-        if abs(diag_val) < eps(real(T))
-            error("Zero diagonal in U at column $j")
-        end
-
-        x[j] /= diag_val
-
-        # Update: for each column c where U[j,c] != 0, subtract U[j,c] * x[j] from x[c]
-        # In CSC, we iterate over columns and find rows, so we need to scan
-        # For U' solve, entry U[j,c] becomes U'[c,j], affecting x[c]
-        for c = 1:n
-            for i in nzrange(U, c)
-                row = rowvals(U)[i]
-                if row == j && c != j
-                    x[c] -= nonzeros(U)[i] * x[j]
-                end
-            end
-        end
-    end
-
-    return x
-end
-
-"""
-    backward_solve_transpose_L!(x, L, elim_to_global)
-
-Solve L' * y = x in-place (L transpose).
-L' is upper triangular with unit diagonal, so we process in reverse order.
-"""
-function backward_solve_transpose_L!(x::AbstractVector{T}, L::SparseMatrixCSC{T},
-                                      elim_to_global::Vector{Int}) where T
-    n = length(x)
-
-    for k = n:-1:1
-        j = elim_to_global[k]
-
-        # L has unit diagonal, so no division needed
-        # Update: for each column c where L[j,c] != 0 (j > c for lower triangular),
-        # subtract L[j,c] * x[j] from x[c]
-        for c = 1:n
-            for i in nzrange(L, c)
-                row = rowvals(L)[i]
-                if row == j && c != j
-                    x[c] -= nonzeros(L)[i] * x[j]
-                end
-            end
-        end
-    end
-
-    return x
-end
-
-"""
-    forward_solve_adjoint_U!(x, U, elim_to_global)
-
-Solve U' * y = x in-place (U adjoint/conjugate transpose).
-"""
-function forward_solve_adjoint_U!(x::AbstractVector{T}, U::SparseMatrixCSC{T},
-                                   elim_to_global::Vector{Int}) where T
-    n = length(x)
-
-    for k = 1:n
-        j = elim_to_global[k]
-
-        # Find diagonal
-        diag_val = zero(T)
-        for i in nzrange(U, j)
-            row = rowvals(U)[i]
-            if row == j
-                diag_val = conj(nonzeros(U)[i])
-                break
-            end
-        end
-
-        if abs(diag_val) < eps(real(T))
-            error("Zero diagonal in U at column $j")
-        end
-
-        x[j] /= diag_val
-
-        # Update with conjugated values
-        for c = 1:n
-            for i in nzrange(U, c)
-                row = rowvals(U)[i]
-                if row == j && c != j
-                    x[c] -= conj(nonzeros(U)[i]) * x[j]
-                end
-            end
-        end
-    end
-
-    return x
-end
-
-"""
-    backward_solve_adjoint_L!(x, L, elim_to_global)
-
-Solve L' * y = x in-place (L adjoint/conjugate transpose).
-"""
-function backward_solve_adjoint_L!(x::AbstractVector{T}, L::SparseMatrixCSC{T},
-                                    elim_to_global::Vector{Int}) where T
-    n = length(x)
-
-    for k = n:-1:1
-        j = elim_to_global[k]
-
-        # L has unit diagonal, no division needed
-        # Update with conjugated values
-        for c = 1:n
-            for i in nzrange(L, c)
-                row = rowvals(L)[i]
-                if row == j && c != j
-                    x[c] -= conj(nonzeros(L)[i]) * x[j]
-                end
-            end
-        end
-    end
-
-    return x
-end
