@@ -269,6 +269,10 @@ mutable struct SolvePlan{T}
     # Mapping: local work index -> global elimination index
     local_to_global::Vector{Int}
 
+    # For each subtree root: the range of local columns belonging to its subtree
+    # Used to compute contributions from the entire subtree during forward solve
+    subtree_local_columns::Dict{Int, Vector{Int}}
+
     # Flag indicating if plan has been initialized
     initialized::Bool
 end
@@ -295,6 +299,7 @@ function SolvePlan{T}(symbolic::SymbolicFactorization) where T
         T[],
         Int[],
         Int[],
+        Dict{Int, Vector{Int}}(),  # subtree_local_columns
         false
     )
 end

@@ -5,14 +5,21 @@ Main algorithm:
 1. Process supernodes in postorder (leaves to root)
 2. For each supernode owned by this rank:
    a. Initialize frontal matrix from distributed sparse entries
-   b. Extend-add contributions from children (all local since subtrees are on same rank)
+   b. Extend-add contributions from children (may involve cross-rank communication)
    c. Partial factorization with pivoting
    d. Extract L and U factors to local storage
-   e. Store update matrix for parent supernode
+   e. Store/send update matrix for parent supernode
 """
 
 using MPI
 using SparseArrays
+
+# MPI tags for factorization communication
+const FACTOR_UPDATE_TAG = 100
+const FACTOR_ROWS_TAG = 101
+const FACTOR_COLS_TAG = 102
+const FACTOR_SIZE_TAG = 103
+const FACTOR_CROSSRANK_U_TAG = 200
 
 """
     lu(A::SparseMatrixMPI{T}; reuse_symbolic=true) -> LUFactorizationMPI{T}
@@ -22,7 +29,7 @@ Compute LU factorization of a distributed sparse matrix.
 Uses the multifrontal method with:
 - AMD fill-reducing ordering
 - Partial pivoting for numerical stability
-- MUMPS-style subtree-to-rank mapping
+- MUMPS-style subtree-to-rank mapping with node splitting for large subtrees
 - MUMPS-style distributed matrix input (each rank only provides its local portion)
 
 If `reuse_symbolic=true`, caches and reuses symbolic factorization for matrices
@@ -44,10 +51,8 @@ end
 Perform the numerical LU factorization.
 
 Uses MUMPS-style distributed matrix input where each rank only provides its
-local portion of the matrix.
-
-Note: The current supernode assignment places complete subtrees on single ranks,
-so all parent-child communication is local (no MPI communication during factorization).
+local portion of the matrix. Supports cross-rank communication for extend-add
+operations when supernodes are split across ranks.
 """
 function numerical_factorization_lu(A::SparseMatrixMPI{T},
                                     symbolic::SymbolicFactorization) where T
@@ -83,6 +88,8 @@ function numerical_factorization_lu(A::SparseMatrixMPI{T},
         snode = symbolic.supernodes[sidx]
         info = symbolic.frontal_info[sidx]
         snode_owner = symbolic.snode_owner[sidx]
+        parent_sidx = symbolic.snode_parent[sidx]
+        parent_owner = parent_sidx != 0 ? symbolic.snode_owner[parent_sidx] : -1
 
         if rank == snode_owner
             # This rank owns this supernode
@@ -91,13 +98,36 @@ function numerical_factorization_lu(A::SparseMatrixMPI{T},
             F = initialize_frontal_distributed(input_plan, A, snode, info)
 
             # 2. Extend-add update matrices from children
-            # Note: All children are on the same rank (subtrees assigned to single ranks)
             for child_sidx in symbolic.snode_children[sidx]
-                if haskey(updates, child_sidx)
-                    extend_add!(F, updates[child_sidx], update_rows[child_sidx], update_cols[child_sidx])
-                    delete!(updates, child_sidx)
-                    delete!(update_rows, child_sidx)
-                    delete!(update_cols, child_sidx)
+                child_owner = symbolic.snode_owner[child_sidx]
+
+                if child_owner == rank
+                    # Local child - use stored update
+                    if haskey(updates, child_sidx)
+                        extend_add!(F, updates[child_sidx], update_rows[child_sidx], update_cols[child_sidx])
+                        delete!(updates, child_sidx)
+                        delete!(update_rows, child_sidx)
+                        delete!(update_cols, child_sidx)
+                    end
+                else
+                    # Cross-rank child - receive update matrix
+                    # First receive size
+                    size_buf = Vector{Int}(undef, 2)
+                    MPI.Recv!(size_buf, child_owner, FACTOR_SIZE_TAG + child_sidx, comm)
+                    nrows_update, ncols_update = size_buf[1], size_buf[2]
+
+                    if nrows_update > 0 && ncols_update > 0
+                        # Receive update matrix and indices
+                        update_matrix = Matrix{T}(undef, nrows_update, ncols_update)
+                        child_rows = Vector{Int}(undef, nrows_update)
+                        child_cols = Vector{Int}(undef, ncols_update)
+
+                        MPI.Recv!(update_matrix, child_owner, FACTOR_UPDATE_TAG + child_sidx, comm)
+                        MPI.Recv!(child_rows, child_owner, FACTOR_ROWS_TAG + child_sidx, comm)
+                        MPI.Recv!(child_cols, child_owner, FACTOR_COLS_TAG + child_sidx, comm)
+
+                        extend_add!(F, update_matrix, child_rows, child_cols)
+                    end
                 end
             end
 
@@ -114,16 +144,35 @@ function numerical_factorization_lu(A::SparseMatrixMPI{T},
             # 5. Extract L and U entries
             extract_LU!(F, snode, symbolic.global_to_elim, L_I, L_J, L_V, U_I, U_J, U_V)
 
-            # 6. Store update matrix for parent (parent is on same rank)
-            parent_sidx = symbolic.snode_parent[sidx]
+            # 6. Handle update matrix for parent
             if parent_sidx != 0
                 nfs = info.nfs
                 nrows = length(info.row_indices)
                 if nrows > nfs
-                    updates[sidx] = copy(F.F[nfs+1:nrows, nfs+1:nrows])
-                    # After pivoting: row_indices is permuted, col_indices is not
-                    update_rows[sidx] = copy(F.row_indices[nfs+1:nrows])
-                    update_cols[sidx] = copy(F.col_indices[nfs+1:nrows])
+                    update_matrix = copy(F.F[nfs+1:nrows, nfs+1:nrows])
+                    rows = copy(F.row_indices[nfs+1:nrows])
+                    cols = copy(F.col_indices[nfs+1:nrows])
+
+                    if parent_owner == rank
+                        # Local parent - store update
+                        updates[sidx] = update_matrix
+                        update_rows[sidx] = rows
+                        update_cols[sidx] = cols
+                    else
+                        # Cross-rank parent - send update matrix
+                        nrows_update = length(rows)
+                        ncols_update = length(cols)
+                        MPI.Send([nrows_update, ncols_update], parent_owner, FACTOR_SIZE_TAG + sidx, comm)
+                        MPI.Send(update_matrix, parent_owner, FACTOR_UPDATE_TAG + sidx, comm)
+                        MPI.Send(rows, parent_owner, FACTOR_ROWS_TAG + sidx, comm)
+                        MPI.Send(cols, parent_owner, FACTOR_COLS_TAG + sidx, comm)
+                    end
+                else
+                    # No update matrix (fully factored)
+                    if parent_owner != rank
+                        # Still need to send empty size to parent
+                        MPI.Send([0, 0], parent_owner, FACTOR_SIZE_TAG + sidx, comm)
+                    end
                 end
             end
         end

@@ -17,6 +17,11 @@ Main algorithm:
 using MPI
 using SparseArrays
 
+# MPI tags for LDLT factorization communication
+const LDLT_UPDATE_TAG = 200
+const LDLT_ROWS_TAG = 201
+const LDLT_SIZE_TAG = 202
+
 """
     ldlt(A::SparseMatrixMPI{T}; reuse_symbolic=true) -> LDLTFactorizationMPI{T}
 
@@ -52,10 +57,8 @@ end
 Perform the numerical LDLT factorization with Bunch-Kaufman pivoting.
 
 Uses MUMPS-style distributed matrix input where each rank only provides its
-local portion of the matrix.
-
-Note: The current supernode assignment places complete subtrees on single ranks,
-so all parent-child communication is local (no MPI communication during factorization).
+local portion of the matrix. Supports cross-rank communication for extend-add
+operations when supernodes are split across ranks.
 """
 function numerical_factorization_ldlt(A::SparseMatrixMPI{T},
                                       symbolic::SymbolicFactorization) where T
@@ -100,13 +103,34 @@ function numerical_factorization_ldlt(A::SparseMatrixMPI{T},
             # 1. Initialize frontal matrix (symmetric) from distributed input
             F = initialize_frontal_sym_distributed(input_plan, A, snode, info)
 
-            # 2. Extend-add update matrices from children
-            # Note: All children are on the same rank (subtrees assigned to single ranks)
+            # 2. Extend-add update matrices from children (may involve cross-rank communication)
             for child_sidx in symbolic.snode_children[sidx]
-                if haskey(updates, child_sidx)
-                    extend_add_sym!(F, updates[child_sidx], update_rows[child_sidx])
-                    delete!(updates, child_sidx)
-                    delete!(update_rows, child_sidx)
+                child_owner = symbolic.snode_owner[child_sidx]
+
+                if child_owner == rank
+                    # Local child - use stored update
+                    if haskey(updates, child_sidx)
+                        extend_add_sym!(F, updates[child_sidx], update_rows[child_sidx])
+                        delete!(updates, child_sidx)
+                        delete!(update_rows, child_sidx)
+                    end
+                else
+                    # Cross-rank child - receive update matrix
+                    # First receive size
+                    size_buf = Vector{Int}(undef, 1)
+                    MPI.Recv!(size_buf, child_owner, LDLT_SIZE_TAG + child_sidx, comm)
+                    nrows_update = size_buf[1]
+
+                    if nrows_update > 0
+                        # Receive update matrix and indices
+                        update_matrix = Matrix{T}(undef, nrows_update, nrows_update)
+                        child_rows = Vector{Int}(undef, nrows_update)
+
+                        MPI.Recv!(update_matrix, child_owner, LDLT_UPDATE_TAG + child_sidx, comm)
+                        MPI.Recv!(child_rows, child_owner, LDLT_ROWS_TAG + child_sidx, comm)
+
+                        extend_add_sym!(F, update_matrix, child_rows)
+                    end
                 end
             end
 
@@ -123,14 +147,33 @@ function numerical_factorization_ldlt(A::SparseMatrixMPI{T},
             # 5. Extract L and D entries
             extract_L_D!(F, snode, symbolic.global_to_elim, L_I, L_J, L_V, D_I, D_J, D_V, D_local, pivot_info)
 
-            # 6. Store update matrix for parent (parent is on same rank)
+            # 6. Handle update matrix for parent
             parent_sidx = symbolic.snode_parent[sidx]
             if parent_sidx != 0
+                parent_owner = symbolic.snode_owner[parent_sidx]
                 nfs = info.nfs
                 nrows = length(info.row_indices)
                 if nrows > nfs
-                    updates[sidx] = copy(F.F[nfs+1:nrows, nfs+1:nrows])
-                    update_rows[sidx] = copy(F.row_indices[nfs+1:nrows])
+                    update_matrix = copy(F.F[nfs+1:nrows, nfs+1:nrows])
+                    rows = copy(F.row_indices[nfs+1:nrows])
+
+                    if parent_owner == rank
+                        # Local parent - store update
+                        updates[sidx] = update_matrix
+                        update_rows[sidx] = rows
+                    else
+                        # Cross-rank parent - send update matrix
+                        nrows_update = length(rows)
+                        MPI.Send([nrows_update], parent_owner, LDLT_SIZE_TAG + sidx, comm)
+                        MPI.Send(update_matrix, parent_owner, LDLT_UPDATE_TAG + sidx, comm)
+                        MPI.Send(rows, parent_owner, LDLT_ROWS_TAG + sidx, comm)
+                    end
+                else
+                    # No update matrix (fully factored)
+                    if parent_owner != rank
+                        # Still need to send empty size to parent
+                        MPI.Send([0], parent_owner, LDLT_SIZE_TAG + sidx, comm)
+                    end
                 end
             end
         end

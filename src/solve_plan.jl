@@ -80,6 +80,44 @@ function initialize_solve_plan!(plan::SolvePlan{T}) where T
     # Allocate work vector
     plan.work_vector = zeros(T, local_count)
 
+    # Compute subtree_local_columns: for each subtree root, the local columns in its subtree
+    # First, find the subtree root for each supernode (the first ancestor that is a subtree root)
+    subtree_root_set = Set(plan.subtree_roots)
+    snode_to_subtree_root = Dict{Int, Int}()
+
+    for sidx in plan.my_supernodes_postorder
+        # Walk up the tree until we find a subtree root or the tree root
+        current = sidx
+        while true
+            if current in subtree_root_set
+                snode_to_subtree_root[sidx] = current
+                break
+            end
+            parent = symbolic.snode_parent[current]
+            if parent == 0 || symbolic.snode_owner[parent] != plan.myrank
+                # Reached tree root or different rank without finding subtree root
+                # This supernode is in a subtree that goes all the way to the tree root
+                # (its subtree root is the topmost supernode on this rank that has parent on different rank)
+                snode_to_subtree_root[sidx] = current
+                break
+            end
+            current = parent
+        end
+    end
+
+    # Build the mapping from subtree root to local columns
+    for sidx in plan.subtree_roots
+        plan.subtree_local_columns[sidx] = Int[]
+    end
+
+    for sidx in plan.my_supernodes_postorder
+        subtree_root = snode_to_subtree_root[sidx]
+        if subtree_root in subtree_root_set
+            local_range = plan.local_snode_indices[sidx]
+            append!(plan.subtree_local_columns[subtree_root], collect(local_range))
+        end
+    end
+
     # Build communication patterns for subtree roots
     for sidx in plan.subtree_roots
         parent = symbolic.snode_parent[sidx]
@@ -237,7 +275,8 @@ function distributed_forward_solve_lu!(y_local::Vector{T},
                 recv_buf = plan.recv_buffers[(child, child_owner)]
                 MPI.Recv!(recv_buf, child_owner, child, comm)
 
-                # Add contribution to y_local for the update rows
+                # Subtract contribution from y_local for the update rows
+                # (contribution = L[row,col] * y[col], and forward solve does y[row] -= L[row,col] * y[col])
                 child_info = symbolic.frontal_info[child]
                 child_nfs = child_info.nfs
                 child_update_rows = child_info.row_indices[child_nfs+1:end]
@@ -246,7 +285,7 @@ function distributed_forward_solve_lu!(y_local::Vector{T},
                     elim_row = symbolic.global_to_elim[global_row]
                     local_row = plan.global_to_local[elim_row]
                     if local_row > 0
-                        y_local[local_row] += recv_buf[buf_idx]
+                        y_local[local_row] -= recv_buf[buf_idx]
                     end
                 end
             end
@@ -279,46 +318,36 @@ function distributed_forward_solve_lu!(y_local::Vector{T},
             parent_owner = symbolic.snode_owner[parent]
             send_buf = plan.send_buffers[(sidx, parent_owner)]
 
-            # Prepare contribution: y values for update rows
+            # Prepare contribution: sum over ALL columns in THIS SUBTREE
+            # Each update row needs contributions from all columns in the subtree
+            # that have nonzeros in that row
+            subtree_columns = plan.subtree_local_columns[sidx]
             update_rows_elim = plan.subtree_root_update_rows[sidx]
             for (buf_idx, elim_row) in enumerate(update_rows_elim)
-                # The update contribution is stored in the L column
-                # We need to gather the partial sums for these rows
-                # But wait - these rows might not be owned by this rank!
-                # Actually, for forward solve, we're sending the y[update_rows] values
-                # which have been accumulated so far
-
-                # The update rows in the frontal matrix become contributions to
-                # the parent's frontal matrix via extend-add
-                # In the solve, this means we need to send:
-                #   sum over k in this supernode of: L[update_row, k] * y[k]
-
-                # Actually, the accumulated y values for update rows need to be
-                # computed and sent. But update rows may not be owned by this rank...
-
-                # Let me reconsider: In forward solve, after processing a supernode,
-                # the update rows have accumulated contributions from this supernode.
-                # These need to be sent to the parent.
-
-                # The complication: update rows may belong to supernodes on other ranks.
-                # For now, let's compute the contribution explicitly.
                 contribution = zero(T)
-                for local_col in local_range
+                # Iterate through columns belonging to this subtree only
+                # Only add contribution when elim_row > elim_col (strictly below diagonal in L)
+                for local_col in subtree_columns
                     elim_col = plan.local_to_global[local_col]
-                    yk = y_local[local_col]
+                    if elim_row > elim_col  # Only below diagonal
+                        yk = y_local[local_col]
 
-                    # Find L[elim_row, elim_col]
-                    for idx in nzrange(L_local, elim_col)
-                        if rowvals(L_local)[idx] == elim_row
-                            contribution += nonzeros(L_local)[idx] * yk
-                            break
+                        # Find L[elim_row, elim_col]
+                        for idx in nzrange(L_local, elim_col)
+                            if rowvals(L_local)[idx] == elim_row
+                                contribution += nonzeros(L_local)[idx] * yk
+                                break
+                            end
                         end
                     end
                 end
                 send_buf[buf_idx] = contribution
+                # Note: We do NOT apply contributions locally here.
+                # All contributions to local rows were already applied during
+                # local forward substitution in each supernode.
             end
 
-            # Send to parent
+            # Send to parent (parent will apply for rows it owns)
             MPI.Send(send_buf, parent_owner, sidx, comm)
         end
     end
@@ -350,98 +379,169 @@ function distributed_backward_solve_lu!(x_local::Vector{T},
 
     # Initialize x_local from y_local
     copy!(x_local, y_local)
+    n = symbolic.n
 
-    # Process supernodes in reverse postorder (root to leaves)
-    for sidx in reverse(plan.my_supernodes_postorder)
+    # Build column owner mapping
+    elim_col_to_owner = zeros(Int, n)
+    for sidx in 1:length(symbolic.supernodes)
         snode = symbolic.supernodes[sidx]
-        info = symbolic.frontal_info[sidx]
-        nfs = info.nfs
+        owner = symbolic.snode_owner[sidx]
+        for col in snode.cols
+            elim_col = symbolic.global_to_elim[col]
+            elim_col_to_owner[elim_col] = owner
+        end
+    end
 
-        # If this is a subtree root, receive solution from parent
-        parent = symbolic.snode_parent[sidx]
-        if parent != 0 && symbolic.snode_owner[parent] != plan.myrank
-            parent_owner = symbolic.snode_owner[parent]
-            recv_buf = plan.recv_buffers[(sidx, parent_owner)]
+    # For multi-rank: First gather all x contributions from other ranks' columns
+    # that affect our rows, BEFORE we start processing our supernodes
+    if plan.nranks > 1
+        # We need to wait for higher columns to be computed first
+        # Use barrier + Allreduce approach: process in waves by rank, starting with
+        # the rank that owns the highest columns
 
-            MPI.Recv!(recv_buf, parent_owner, sidx + 1000000, comm)  # Use different tag
+        # Determine which rank owns the root (highest column)
+        max_col_rank = elim_col_to_owner[n]
 
-            # Apply received solution to update local x values
-            update_rows_elim = plan.subtree_root_update_rows[sidx]
+        # Process from root down: first rank with highest cols, then next, etc.
+        # For simplicity, use a global Allreduce after ALL local backward subs
+
+        # First pass: each rank does local backward sub for its columns only
+        # (not applying cross-rank U entries yet)
+        for sidx in reverse(plan.my_supernodes_postorder)
+            snode = symbolic.supernodes[sidx]
+            info = symbolic.frontal_info[sidx]
+            nfs = info.nfs
+
+            # Local backward substitution within this supernode (reverse order)
             local_range = plan.local_snode_indices[sidx]
+            for local_col in reverse(collect(local_range))
+                elim_col = plan.local_to_global[local_col]
 
-            for (buf_idx, elim_row) in enumerate(update_rows_elim)
-                x_update_row = recv_buf[buf_idx]
+                # First, we need to account for contributions from columns > elim_col
+                # that are owned by OTHER ranks. We'll handle this after Allreduce.
+                # For now, just compute partial result.
 
-                # Subtract U[k, elim_row] * x[elim_row] from x[k] for k in this supernode
-                for local_col in local_range
-                    elim_col = plan.local_to_global[local_col]
+                # Divide by diagonal
+                diag_val = zero(T)
+                for idx in nzrange(U_local, elim_col)
+                    if rowvals(U_local)[idx] == elim_col
+                        diag_val = nonzeros(U_local)[idx]
+                        break
+                    end
+                end
+                if diag_val == zero(T)
+                    error("Zero diagonal in U at elimination step $elim_col")
+                end
+                x_local[local_col] /= diag_val
 
-                    # Find U[elim_col, elim_row]
-                    for idx in nzrange(U_local, elim_row)
-                        if rowvals(U_local)[idx] == elim_col
-                            x_local[local_col] -= nonzeros(U_local)[idx] * x_update_row
-                            break
+                xk = x_local[local_col]
+
+                # Update rows above (only for columns we own)
+                for idx in nzrange(U_local, elim_col)
+                    elim_row = rowvals(U_local)[idx]
+                    if elim_row != elim_col
+                        local_row = plan.global_to_local[elim_row]
+                        if local_row > 0
+                            # Only apply if the update column is owned by us
+                            x_local[local_row] -= nonzeros(U_local)[idx] * xk
                         end
                     end
                 end
             end
         end
 
-        # Local backward substitution within this supernode (reverse order)
-        local_range = plan.local_snode_indices[sidx]
-        for local_col in reverse(collect(local_range))
-            elim_col = plan.local_to_global[local_col]
+        # Gather all x values
+        x_global = zeros(T, n)
+        for local_idx in 1:length(x_local)
+            elim_idx = plan.local_to_global[local_idx]
+            x_global[elim_idx] = x_local[local_idx]
+        end
+        x_global = MPI.Allreduce(x_global, +, comm)
 
-            # Divide by diagonal
-            diag_val = zero(T)
-            for idx in nzrange(U_local, elim_col)
-                if rowvals(U_local)[idx] == elim_col
-                    diag_val = nonzeros(U_local)[idx]
-                    break
-                end
-            end
-            if diag_val == zero(T)
-                error("Zero diagonal in U at elimination step $elim_col")
-            end
-            x_local[local_col] /= diag_val
+        # Now re-compute x values by applying contributions from other ranks' columns
+        # We need to re-do the backward solve with proper ordering
+        # Process columns in decreasing order, applying cross-rank contributions
 
-            xk = x_local[local_col]
+        # Reset x_local to y_local
+        copy!(x_local, y_local)
 
-            # Update rows above
-            for idx in nzrange(U_local, elim_col)
-                elim_row = rowvals(U_local)[idx]
-                if elim_row != elim_col
-                    local_row = plan.global_to_local[elim_row]
-                    if local_row > 0
-                        x_local[local_row] -= nonzeros(U_local)[idx] * xk
+        # Process ALL columns in decreasing order, using x_global for cross-rank columns
+        for elim_col in n:-1:1
+            local_col = plan.global_to_local[elim_col]
+            col_owner = elim_col_to_owner[elim_col]
+
+            if col_owner == plan.myrank
+                # We own this column, compute x[elim_col]
+                # First apply contributions from columns > elim_col that we own
+                # (already done via y_local updates during first pass... but we reset)
+                # Actually, let's do it fresh here
+
+                # Apply contributions from ALL columns > elim_col
+                for elim_col2 in elim_col+1:n
+                    col2_owner = elim_col_to_owner[elim_col2]
+                    if col2_owner == plan.myrank
+                        # Use local x value
+                        local_col2 = plan.global_to_local[elim_col2]
+                        x_col2 = x_local[local_col2]
+                    else
+                        # Use global x value from other rank
+                        x_col2 = x_global[elim_col2]
+                    end
+
+                    # Find U[elim_col, elim_col2]
+                    for idx in nzrange(U_local, elim_col2)
+                        if rowvals(U_local)[idx] == elim_col
+                            x_local[local_col] -= nonzeros(U_local)[idx] * x_col2
+                            break
+                        end
                     end
                 end
+
+                # Divide by diagonal
+                diag_val = zero(T)
+                for idx in nzrange(U_local, elim_col)
+                    if rowvals(U_local)[idx] == elim_col
+                        diag_val = nonzeros(U_local)[idx]
+                        break
+                    end
+                end
+                x_local[local_col] /= diag_val
             end
         end
+    else
+        # Single rank: standard backward solve
+        for sidx in reverse(plan.my_supernodes_postorder)
+            snode = symbolic.supernodes[sidx]
+            info = symbolic.frontal_info[sidx]
+            nfs = info.nfs
 
-        # If we have children on other ranks, send solution to them
-        children = symbolic.snode_children[sidx]
-        for child in children
-            child_owner = symbolic.snode_owner[child]
-            if child_owner != plan.myrank
-                send_buf = plan.send_buffers[(child, child_owner)]
+            local_range = plan.local_snode_indices[sidx]
+            for local_col in reverse(collect(local_range))
+                elim_col = plan.local_to_global[local_col]
 
-                # Send x values for update rows that the child needs
-                child_info = symbolic.frontal_info[child]
-                child_nfs = child_info.nfs
-                child_update_rows = child_info.row_indices[child_nfs+1:end]
-
-                for (buf_idx, global_row) in enumerate(child_update_rows)
-                    elim_row = symbolic.global_to_elim[global_row]
-                    local_row = plan.global_to_local[elim_row]
-                    if local_row > 0
-                        send_buf[buf_idx] = x_local[local_row]
-                    else
-                        send_buf[buf_idx] = zero(T)  # Not owned by this rank
+                diag_val = zero(T)
+                for idx in nzrange(U_local, elim_col)
+                    if rowvals(U_local)[idx] == elim_col
+                        diag_val = nonzeros(U_local)[idx]
+                        break
                     end
                 end
+                if diag_val == zero(T)
+                    error("Zero diagonal in U at elimination step $elim_col")
+                end
+                x_local[local_col] /= diag_val
 
-                MPI.Send(send_buf, child_owner, child + 1000000, comm)
+                xk = x_local[local_col]
+
+                for idx in nzrange(U_local, elim_col)
+                    elim_row = rowvals(U_local)[idx]
+                    if elim_row != elim_col
+                        local_row = plan.global_to_local[elim_row]
+                        if local_row > 0
+                            x_local[local_row] -= nonzeros(U_local)[idx] * xk
+                        end
+                    end
+                end
             end
         end
     end
@@ -577,7 +677,8 @@ end
 
 Distributed forward solve for LDLT: L y = b where L is unit lower triangular.
 
-Similar to LU forward solve but L comes from LDLT factorization.
+Uses tree-based communication (same as LU forward solve) - contributions are
+sent through parent-child relationships in the elimination tree.
 """
 function distributed_forward_solve_ldlt!(y_local::Vector{T},
                                           F::LDLTFactorizationMPI{T},
@@ -606,6 +707,7 @@ function distributed_forward_solve_ldlt!(y_local::Vector{T},
                 recv_buf = plan.recv_buffers[(child, child_owner)]
                 MPI.Recv!(recv_buf, child_owner, child, comm)
 
+                # Subtract contribution from y_local for the update rows
                 child_info = symbolic.frontal_info[child]
                 child_nfs = child_info.nfs
                 child_update_rows = child_info.row_indices[child_nfs+1:end]
@@ -614,7 +716,7 @@ function distributed_forward_solve_ldlt!(y_local::Vector{T},
                     elim_row = symbolic.global_to_elim[global_row]
                     local_row = plan.global_to_local[elim_row]
                     if local_row > 0
-                        y_local[local_row] += recv_buf[buf_idx]
+                        y_local[local_row] -= recv_buf[buf_idx]
                     end
                 end
             end
@@ -646,17 +748,21 @@ function distributed_forward_solve_ldlt!(y_local::Vector{T},
             parent_owner = symbolic.snode_owner[parent]
             send_buf = plan.send_buffers[(sidx, parent_owner)]
 
+            # Use subtree_local_columns to compute contributions from all columns in this subtree
+            subtree_columns = get(plan.subtree_local_columns, sidx, local_range)
             update_rows_elim = plan.subtree_root_update_rows[sidx]
             for (buf_idx, elim_row) in enumerate(update_rows_elim)
                 contribution = zero(T)
-                for local_col in local_range
+                for local_col in subtree_columns
                     elim_col = plan.local_to_global[local_col]
-                    yk = y_local[local_col]
+                    if elim_row > elim_col  # Only below diagonal
+                        yk = y_local[local_col]
 
-                    for idx in nzrange(L_local, elim_col)
-                        if rowvals(L_local)[idx] == elim_row
-                            contribution += nonzeros(L_local)[idx] * yk
-                            break
+                        for idx in nzrange(L_local, elim_col)
+                            if rowvals(L_local)[idx] == elim_row
+                                contribution += nonzeros(L_local)[idx] * yk
+                                break
+                            end
                         end
                     end
                 end
@@ -771,7 +877,8 @@ end
 
 Distributed backward solve for LDLT: L^T x = z (transpose, not adjoint).
 
-Process supernodes in reverse postorder (root to leaves).
+For L^T x = z, row i gives: x[i] = z[i] - sum(L[j,i] * x[j] for j > i)
+Process columns in decreasing order.
 """
 function distributed_backward_solve_ldlt!(x_local::Vector{T},
                                            F::LDLTFactorizationMPI{T},
@@ -780,84 +887,98 @@ function distributed_backward_solve_ldlt!(x_local::Vector{T},
     comm = MPI.COMM_WORLD
     symbolic = plan.symbolic
     L_local = F.L_local
+    n = symbolic.n
 
     copy!(x_local, z_local)
 
-    # Process supernodes in reverse postorder (root to leaves)
-    for sidx in reverse(plan.my_supernodes_postorder)
+    # Build column owner mapping
+    elim_col_to_owner = zeros(Int, n)
+    for sidx in 1:length(symbolic.supernodes)
         snode = symbolic.supernodes[sidx]
-        info = symbolic.frontal_info[sidx]
+        owner = symbolic.snode_owner[sidx]
+        for col in snode.cols
+            elim_col = symbolic.global_to_elim[col]
+            elim_col_to_owner[elim_col] = owner
+        end
+    end
 
-        # If this is a subtree root, receive from parent
-        parent = symbolic.snode_parent[sidx]
-        if parent != 0 && symbolic.snode_owner[parent] != plan.myrank
-            parent_owner = symbolic.snode_owner[parent]
-            recv_buf = plan.recv_buffers[(sidx, parent_owner)]
+    if plan.nranks > 1
+        # Multi-rank: use two-pass approach with Allreduce
 
-            MPI.Recv!(recv_buf, parent_owner, sidx + 1000000, comm)
-
-            # Apply received values: x[k] -= L[update_row, k]^T * x[update_row]
-            update_rows_elim = plan.subtree_root_update_rows[sidx]
+        # First pass: each rank does local backward sub for its columns only
+        for sidx in reverse(plan.my_supernodes_postorder)
             local_range = plan.local_snode_indices[sidx]
+            for local_col in reverse(collect(local_range))
+                elim_col = plan.local_to_global[local_col]
 
-            for (buf_idx, elim_row) in enumerate(update_rows_elim)
-                x_update_row = recv_buf[buf_idx]
-
-                # For L^T, entry L[elim_row, elim_col] becomes L^T[elim_col, elim_row]
-                for local_col in local_range
-                    elim_col = plan.local_to_global[local_col]
-
-                    for idx in nzrange(L_local, elim_col)
-                        if rowvals(L_local)[idx] == elim_row
-                            x_local[local_col] -= nonzeros(L_local)[idx] * x_update_row
-                            break
+                # Apply L^T contributions from local rows only
+                for idx in nzrange(L_local, elim_col)
+                    elim_row = rowvals(L_local)[idx]
+                    if elim_row > elim_col
+                        local_row = plan.global_to_local[elim_row]
+                        if local_row > 0
+                            x_local[local_col] -= nonzeros(L_local)[idx] * x_local[local_row]
                         end
                     end
                 end
             end
         end
 
-        # Local backward substitution with L^T (reverse column order)
-        local_range = plan.local_snode_indices[sidx]
-        for local_col in reverse(collect(local_range))
-            elim_col = plan.local_to_global[local_col]
-
-            # For L^T[elim_col, :], we need entries from column elim_col of L
-            # L^T[elim_col, j] = L[j, elim_col] for j > elim_col (below diagonal)
-            for idx in nzrange(L_local, elim_col)
-                elim_row = rowvals(L_local)[idx]
-                if elim_row > elim_col  # Below diagonal in L = right of diagonal in L^T
-                    local_row = plan.global_to_local[elim_row]
-                    if local_row > 0
-                        x_local[local_col] -= nonzeros(L_local)[idx] * x_local[local_row]
-                    end
-                end
-            end
-            # Unit diagonal - no division needed
+        # Gather all x values via Allreduce
+        x_global = zeros(T, n)
+        for local_idx in 1:length(x_local)
+            elim_idx = plan.local_to_global[local_idx]
+            x_global[elim_idx] = x_local[local_idx]
         end
+        x_global = MPI.Allreduce(x_global, +, comm)
 
-        # Send to children on other ranks
-        children = symbolic.snode_children[sidx]
-        for child in children
-            child_owner = symbolic.snode_owner[child]
-            if child_owner != plan.myrank
-                send_buf = plan.send_buffers[(child, child_owner)]
+        # Reset x_local to z_local
+        copy!(x_local, z_local)
 
-                child_info = symbolic.frontal_info[child]
-                child_nfs = child_info.nfs
-                child_update_rows = child_info.row_indices[child_nfs+1:end]
+        # Second pass: process all columns in decreasing order
+        for elim_col in n:-1:1
+            local_col = plan.global_to_local[elim_col]
+            col_owner = elim_col_to_owner[elim_col]
 
-                for (buf_idx, global_row) in enumerate(child_update_rows)
-                    elim_row = symbolic.global_to_elim[global_row]
-                    local_row = plan.global_to_local[elim_row]
-                    if local_row > 0
-                        send_buf[buf_idx] = x_local[local_row]
+            if col_owner == plan.myrank
+                # Apply contributions from ALL columns > elim_col
+                for elim_col2 in elim_col+1:n
+                    col2_owner = elim_col_to_owner[elim_col2]
+                    if col2_owner == plan.myrank
+                        local_col2 = plan.global_to_local[elim_col2]
+                        x_col2 = x_local[local_col2]
                     else
-                        send_buf[buf_idx] = zero(T)
+                        x_col2 = x_global[elim_col2]
+                    end
+
+                    # Find L[elim_col2, elim_col] (L is stored in CSC by column elim_col)
+                    # For L^T solve: x[elim_col] -= L[elim_col2, elim_col] * x[elim_col2]
+                    for idx in nzrange(L_local, elim_col)
+                        if rowvals(L_local)[idx] == elim_col2
+                            x_local[local_col] -= nonzeros(L_local)[idx] * x_col2
+                            break
+                        end
                     end
                 end
+                # Unit diagonal - no division needed
+            end
+        end
+    else
+        # Single rank: standard backward solve
+        for sidx in reverse(plan.my_supernodes_postorder)
+            local_range = plan.local_snode_indices[sidx]
+            for local_col in reverse(collect(local_range))
+                elim_col = plan.local_to_global[local_col]
 
-                MPI.Send(send_buf, child_owner, child + 1000000, comm)
+                for idx in nzrange(L_local, elim_col)
+                    elim_row = rowvals(L_local)[idx]
+                    if elim_row > elim_col
+                        local_row = plan.global_to_local[elim_row]
+                        if local_row > 0
+                            x_local[local_col] -= nonzeros(L_local)[idx] * x_local[local_row]
+                        end
+                    end
+                end
             end
         end
     end

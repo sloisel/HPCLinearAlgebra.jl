@@ -457,12 +457,17 @@ end
     assign_supernodes_to_ranks(supernodes, snode_parent, frontal_info, snode_postorder, nranks)
         -> (snode_owner, snode_children)
 
-Assign supernodes to MPI ranks using MUMPS-style subtree mapping.
+Assign supernodes to MPI ranks using MUMPS-style subtree mapping with node splitting.
 
-Strategy:
-- Complete subtrees are assigned to single ranks (minimizes communication)
-- Load balancing via bin-packing based on frontal matrix size estimates
-- Subtrees are assigned to the least-loaded rank
+Strategy (following MUMPS approach):
+- Small subtrees are assigned entirely to single ranks (minimizes communication)
+- Large subtrees near the root are split across ranks for better parallelism
+- When a subtree exceeds the split threshold, children are assigned first (potentially
+  to different ranks), then the parent is assigned to the least-loaded rank
+- This creates cross-rank boundaries that enable parallel factorization and solve
+
+The split threshold is based on total_weight / nranks, ensuring that work is
+distributed when subtrees are large enough to benefit from parallelism.
 
 Returns:
 - `snode_owner`: Vector of rank assignments (0-indexed) for each supernode
@@ -485,17 +490,19 @@ function assign_supernodes_to_ranks(supernodes::Vector{Supernode},
         end
     end
 
-    # Compute subtree weights (cost estimate based on frontal matrix operations)
-    weight = zeros(Float64, nsupernodes)
+    # Compute local costs and subtree weights
+    local_cost = zeros(Float64, nsupernodes)
+    subtree_weight = zeros(Float64, nsupernodes)
+
     for sidx in snode_postorder  # postorder ensures children processed first
         info = frontal_info[sidx]
         nrows = length(info.row_indices)
         nfs = info.nfs
         # Cost estimate: O(nfs * nrows^2) for partial factorization
-        local_cost = Float64(nfs) * Float64(nrows)^2
-        # Add child weights
-        child_weight = sum(weight[c] for c in snode_children[sidx]; init=0.0)
-        weight[sidx] = local_cost + child_weight
+        local_cost[sidx] = Float64(nfs) * Float64(nrows)^2
+        # Subtree weight includes children
+        child_weight = sum(subtree_weight[c] for c in snode_children[sidx]; init=0.0)
+        subtree_weight[sidx] = local_cost[sidx] + child_weight
     end
 
     # Collect subtree for each supernode
@@ -507,30 +514,64 @@ function assign_supernodes_to_ranks(supernodes::Vector{Supernode},
         return result
     end
 
-    # Identify subtree roots (nodes whose parent is on a different rank or is root)
-    # Start from tree roots and partition
-    assigned = falses(nsupernodes)
-    rank_loads = zeros(Float64, nranks)
-
     # Find tree roots (supernodes with parent = 0)
     roots = [sidx for sidx in 1:nsupernodes if snode_parent[sidx] == 0]
 
-    # Process subtrees in order of decreasing weight for better load balance
-    subtree_roots = Int[]
+    # Compute total weight and split threshold
+    total_weight = sum(subtree_weight[r] for r in roots; init=0.0)
 
-    # For each root, collect its subtree for assignment
-    for root in roots
-        subtree = collect_subtree(root)
+    # Split threshold: subtrees larger than this will be split across ranks
+    # Using 1.5x average load allows some imbalance while still splitting large subtrees
+    split_threshold = total_weight / nranks * 1.5
 
-        # For simplicity, assign entire subtree to one rank
-        # (A more sophisticated algorithm would split large subtrees)
-        target_rank = argmin(rank_loads) - 1  # 0-indexed
+    # Track assignments
+    assigned = falses(nsupernodes)
+    rank_loads = zeros(Float64, nranks)
 
-        for s in subtree
-            snode_owner[s] = target_rank
-            assigned[s] = true
+    # Recursive assignment with splitting for large subtrees
+    function assign_subtree!(root::Int)
+        if assigned[root]
+            return
         end
-        rank_loads[target_rank + 1] += weight[root]
+
+        sw = subtree_weight[root]
+        children = snode_children[root]
+
+        # Decision: split or keep together?
+        # Split if:
+        # 1. Subtree weight exceeds threshold, AND
+        # 2. There are children to split off, AND
+        # 3. We have multiple ranks
+        should_split = sw > split_threshold && !isempty(children) && nranks > 1
+
+        if should_split
+            # Large subtree: recursively assign children first (they may go to different ranks)
+            for child in children
+                assign_subtree!(child)
+            end
+
+            # Then assign this node to the least-loaded rank
+            # This may create a cross-rank boundary if children went to different ranks
+            target_rank = argmin(rank_loads) - 1  # 0-indexed
+            snode_owner[root] = target_rank
+            assigned[root] = true
+            rank_loads[target_rank + 1] += local_cost[root]
+        else
+            # Small subtree or leaf: assign entire subtree to one rank
+            target_rank = argmin(rank_loads) - 1  # 0-indexed
+            subtree = collect_subtree(root)
+
+            for s in subtree
+                snode_owner[s] = target_rank
+                assigned[s] = true
+            end
+            rank_loads[target_rank + 1] += sw
+        end
+    end
+
+    # Process all tree roots
+    for root in roots
+        assign_subtree!(root)
     end
 
     return snode_owner, snode_children
@@ -589,6 +630,8 @@ function compute_symbolic_factorization(A::SparseMatrixMPI{T}; symmetric::Bool=f
         supernodes, snode_parent, frontal_info, snode_postorder, nranks)
 
     # Build elimination order mapping
+    # snode.cols are column indices in the REORDERED matrix (Ap = A[perm, perm])
+    # global_to_elim maps reordered column index to processing order
     elim_to_global = zeros(Int, n)
     global_to_elim = zeros(Int, n)
     elim_counter = 0

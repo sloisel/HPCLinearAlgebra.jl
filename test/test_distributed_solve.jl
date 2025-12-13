@@ -217,6 +217,83 @@ end
 
 MPI.Barrier(comm)
 
+# Test 6: Large matrix to force cross-rank communication
+# The cross-rank code paths only execute when subtree roots have parents on other ranks
+if rank == 0
+    println("[test] Large LU with cross-rank communication")
+    flush(stdout)
+end
+
+# Use a larger 2D Laplacian that creates multiple subtrees across ranks
+A_large_full = create_2d_laplacian(8, 8)  # 64 nodes
+n_large = size(A_large_full, 1)
+A_large_mpi = SparseMatrixMPI{Float64}(A_large_full)
+
+b_large_full = [1.0 + 0.1*i for i in 1:n_large]
+b_large = VectorMPI(b_large_full)
+
+F_large = lu(A_large_mpi)
+
+# Check if we have cross-rank communication (subtree roots with parents on other ranks)
+plan = LinearAlgebraMPI.get_or_create_solve_plan(F_large)
+local_subtree_roots = Int32(length(plan.subtree_roots))
+total_subtree_roots = MPI.Allreduce(local_subtree_roots, +, comm)
+
+if rank == 0
+    println("  Total subtree roots across all ranks: $total_subtree_roots")
+    println("  (Non-zero means cross-rank communication is tested)")
+end
+
+x_large = solve(F_large, b_large)
+x_large_full = Vector(x_large)
+
+residual_large = norm(A_large_full * x_large_full - b_large_full, Inf)
+
+if rank == 0
+    println("  Large LU solve residual: $residual_large")
+end
+
+@test residual_large < TOL
+
+MPI.Barrier(comm)
+
+# Test 7: Even larger LDLT to ensure cross-rank paths are exercised
+if rank == 0
+    println("[test] Large LDLT with cross-rank communication")
+    flush(stdout)
+end
+
+A_large_ldlt_full = create_2d_laplacian(10, 10)  # 100 nodes
+n_large_ldlt = size(A_large_ldlt_full, 1)
+A_large_ldlt_mpi = SparseMatrixMPI{Float64}(A_large_ldlt_full)
+
+b_large_ldlt_full = [1.0 + 0.1*i for i in 1:n_large_ldlt]
+b_large_ldlt = VectorMPI(b_large_ldlt_full)
+
+F_large_ldlt = ldlt(A_large_ldlt_mpi)
+
+# Check cross-rank communication for LDLT
+plan_ldlt = LinearAlgebraMPI.get_or_create_solve_plan(F_large_ldlt)
+local_subtree_roots_ldlt = Int32(length(plan_ldlt.subtree_roots))
+total_subtree_roots_ldlt = MPI.Allreduce(local_subtree_roots_ldlt, +, comm)
+
+if rank == 0
+    println("  Total subtree roots across all ranks: $total_subtree_roots_ldlt")
+end
+
+x_large_ldlt = solve(F_large_ldlt, b_large_ldlt)
+x_large_ldlt_full = Vector(x_large_ldlt)
+
+residual_large_ldlt = norm(A_large_ldlt_full * x_large_ldlt_full - b_large_ldlt_full, Inf)
+
+if rank == 0
+    println("  Large LDLT solve residual: $residual_large_ldlt")
+end
+
+@test residual_large_ldlt < TOL
+
+MPI.Barrier(comm)
+
 end  # QuietTestSet
 
 # Aggregate results across ranks
