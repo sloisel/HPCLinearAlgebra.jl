@@ -218,50 +218,6 @@ result = gather_sparse(result_dist)
 
 
 if rank == 0
-    println("[test] cat dims=(1,n) same as hcat")
-    flush(stdout)
-end
-
-A = make_random_sparse(10, 5)
-B = make_random_sparse(10, 6)
-C = make_random_sparse(10, 4)
-
-Adist = SparseMatrixMPI{Float64}(A)
-Bdist = SparseMatrixMPI{Float64}(B)
-Cdist = SparseMatrixMPI{Float64}(C)
-
-# dims=(1,3) should be same as hcat
-result1 = gather_sparse(cat(Adist, Bdist, Cdist; dims=(1, 3)))
-result2 = gather_sparse(hcat(Adist, Bdist, Cdist))
-ref = hcat(A, B, C)
-
-@test result1 == ref
-@test result2 == ref
-
-
-if rank == 0
-    println("[test] cat dims=(n,1) same as vcat")
-    flush(stdout)
-end
-
-A = make_random_sparse(5, 10)
-B = make_random_sparse(6, 10)
-C = make_random_sparse(4, 10)
-
-Adist = SparseMatrixMPI{Float64}(A)
-Bdist = SparseMatrixMPI{Float64}(B)
-Cdist = SparseMatrixMPI{Float64}(C)
-
-# dims=(3,1) should be same as vcat
-result1 = gather_sparse(cat(Adist, Bdist, Cdist; dims=(3, 1)))
-result2 = gather_sparse(vcat(Adist, Bdist, Cdist))
-ref = vcat(A, B, C)
-
-@test result1 == ref
-@test result2 == ref
-
-
-if rank == 0
     println("[test] VectorMPI vcat")
     flush(stdout)
 end

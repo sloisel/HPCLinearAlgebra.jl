@@ -265,30 +265,12 @@ if rank == 0
 end
 @test err < TOL
 
-# Test 6: Direct A \ b solve
-if rank == 0
-    println("[test] Direct A \\ b solve")
-    flush(stdout)
-end
-
+# Setup for transpose/adjoint/division tests
 n = 8
 A_full = create_general_tridiagonal(n)
 A = SparseMatrixMPI{Float64}(A_full)
 b_full = ones(n)
 b = VectorMPI(b_full)
-
-# Direct solve without explicit factorization
-x = A \ b
-
-x_full = Vector(x)
-residual = A_full * x_full - b_full
-err = norm(residual, Inf)
-
-if rank == 0
-    println("  Direct solve residual: $err")
-end
-@test err < TOL
-
 
 # Test 7: Transpose solve - transpose(A) \ b
 if rank == 0

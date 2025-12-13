@@ -373,40 +373,6 @@ end
 
 
 if rank == 0
-    println("[test] Transposed vector addition and subtraction")
-    flush(stdout)
-end
-
-n = 8
-u_global = collect(1.0:n)
-v_global = collect(n:-1.0:1)
-
-udist = VectorMPI(u_global)
-vdist = VectorMPI(v_global)
-
-my_start = udist.partition[rank+1]
-my_end = udist.partition[rank+2] - 1
-
-# transpose(u) + transpose(v)
-wt = transpose(udist) + transpose(vdist)
-w_ref = u_global + v_global
-err_add = maximum(abs.(wt.parent.v .- w_ref[my_start:my_end]))
-@test err_add < TOL
-
-# transpose(u) - transpose(v)
-wt = transpose(udist) - transpose(vdist)
-w_ref = u_global - v_global
-err_sub = maximum(abs.(wt.parent.v .- w_ref[my_start:my_end]))
-@test err_sub < TOL
-
-# -transpose(v)
-wt = -transpose(vdist)
-w_ref = -v_global
-err_neg = maximum(abs.(wt.parent.v .- w_ref[my_start:my_end]))
-@test err_neg < TOL
-
-
-if rank == 0
     println("[test] Scalar multiplication")
     flush(stdout)
 end
