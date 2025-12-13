@@ -384,10 +384,100 @@ MatrixMPI_local
 SparseMatrixMPI_local
 ```
 
+## Factorization
+
+LinearAlgebraMPI provides distributed sparse direct solvers using the multifrontal method.
+
+### LU Factorization
+
+```julia
+F = lu(A::SparseMatrixMPI{T}; reuse_symbolic=true) -> LUFactorizationMPI{T}
+```
+
+Compute LU factorization of a distributed sparse matrix using the multifrontal method with:
+- AMD fill-reducing ordering
+- Partial pivoting for numerical stability
+- MUMPS-style subtree-to-rank mapping
+
+If `reuse_symbolic=true` (default), caches and reuses symbolic factorization for matrices with the same sparsity pattern.
+
+### LDLT Factorization
+
+```julia
+F = ldlt(A::SparseMatrixMPI{T}; reuse_symbolic=true) -> LDLTFactorizationMPI{T}
+```
+
+Compute LDLT factorization of a distributed symmetric sparse matrix using the multifrontal method with:
+- AMD fill-reducing ordering
+- Bunch-Kaufman pivoting for numerical stability with indefinite matrices
+- MUMPS-style subtree-to-rank mapping
+
+The factorization satisfies: `A[perm,perm] = P' * L * D * L^T * P`
+
+Note: Uses transpose (`L^T`), not adjoint (`L*`). Correct for real symmetric and complex symmetric matrices, but NOT for complex Hermitian matrices.
+
+### Factorization Types
+
+```@docs
+LUFactorizationMPI
+LDLTFactorizationMPI
+SymbolicFactorization
+```
+
+### Solving Linear Systems
+
+```@docs
+solve
+solve!
+```
+
+### Usage Examples
+
+```julia
+using LinearAlgebraMPI
+using LinearAlgebra
+using SparseArrays
+
+# Create a distributed sparse matrix
+A_local = sprand(1000, 1000, 0.01) + 10I
+A_local = A_local + A_local'  # Make symmetric
+A = SparseMatrixMPI{Float64}(A_local)
+
+# LDLT factorization (for symmetric matrices)
+F = ldlt(A)
+
+# Solve Ax = b
+b = VectorMPI(ones(1000))
+x = solve(F, b)
+
+# Or use backslash
+x = F \ b
+
+# For non-symmetric matrices, use LU
+A_nonsym = SparseMatrixMPI{Float64}(sprand(1000, 1000, 0.01) + 10I)
+F_lu = lu(A_nonsym)
+x = solve(F_lu, b)
+```
+
+### Plan Reuse
+
+The symbolic factorization (fill-reducing ordering, elimination tree, supernode detection) is cached and reused for matrices with the same sparsity pattern:
+
+```julia
+# First factorization computes symbolic phase
+F1 = ldlt(A1; reuse_symbolic=true)
+
+# Second factorization with same structure reuses symbolic phase
+A2 = SparseMatrixMPI{Float64}(A2_local)  # Same structure, different values
+F2 = ldlt(A2; reuse_symbolic=true)  # Faster - reuses cached symbolic
+```
+
 ## Cache Management
 
 ```@docs
 clear_plan_cache!
+clear_symbolic_cache!
+clear_factorization_plan_cache!
 ```
 
 ## Full API Index

@@ -390,6 +390,182 @@ end
 MPI.Finalize()
 ```
 
+## Solving Linear Systems
+
+LinearAlgebraMPI provides distributed sparse direct solvers using the multifrontal method.
+
+### LDLT Factorization (Symmetric Matrices)
+
+```julia
+using MPI
+MPI.Init()
+
+using LinearAlgebraMPI
+using SparseArrays
+using LinearAlgebra
+
+comm = MPI.COMM_WORLD
+rank = MPI.Comm_rank(comm)
+
+# Create a symmetric positive definite tridiagonal matrix
+n = 100
+I = [1:n; 1:n-1; 2:n]
+J = [1:n; 2:n; 1:n-1]
+V = [4.0*ones(n); -ones(n-1); -ones(n-1)]
+A = sparse(I, J, V, n, n)
+
+# Distribute the matrix
+Adist = SparseMatrixMPI{Float64}(A)
+
+# Compute LDLT factorization
+F = ldlt(Adist)
+
+# Create right-hand side
+b = VectorMPI(ones(n))
+
+# Solve Ax = b
+x = solve(F, b)
+
+# Or use backslash syntax
+x = F \ b
+
+# Verify solution
+x_full = Vector(x)
+residual = norm(A * x_full - ones(n), Inf)
+
+if rank == 0
+    println("LDLT solve residual: $residual")
+end
+
+MPI.Finalize()
+```
+
+### LU Factorization (General Matrices)
+
+```julia
+using MPI
+MPI.Init()
+
+using LinearAlgebraMPI
+using SparseArrays
+using LinearAlgebra
+
+comm = MPI.COMM_WORLD
+rank = MPI.Comm_rank(comm)
+
+# Create a general (non-symmetric) tridiagonal matrix
+n = 100
+I = [1:n; 1:n-1; 2:n]
+J = [1:n; 2:n; 1:n-1]
+V = [2.0*ones(n); -0.5*ones(n-1); -0.8*ones(n-1)]  # Non-symmetric
+A = sparse(I, J, V, n, n)
+
+# Distribute and factorize
+Adist = SparseMatrixMPI{Float64}(A)
+F = lu(Adist)
+
+# Solve
+b = VectorMPI(ones(n))
+x = solve(F, b)
+
+# Verify
+x_full = Vector(x)
+residual = norm(A * x_full - ones(n), Inf)
+
+if rank == 0
+    println("LU solve residual: $residual")
+end
+
+MPI.Finalize()
+```
+
+### Symmetric Indefinite Matrices
+
+LDLT uses Bunch-Kaufman pivoting to handle symmetric indefinite matrices:
+
+```julia
+using MPI
+MPI.Init()
+
+using LinearAlgebraMPI
+using SparseArrays
+using LinearAlgebra
+
+rank = MPI.Comm_rank(MPI.COMM_WORLD)
+
+# Symmetric indefinite matrix (alternating signs on diagonal)
+n = 50
+I = [1:n; 1:n-1; 2:n]
+J = [1:n; 2:n; 1:n-1]
+diag_vals = [(-1.0)^i * 2.0 for i in 1:n]  # Alternating signs
+V = [diag_vals; -ones(n-1); -ones(n-1)]
+A = sparse(I, J, V, n, n)
+
+Adist = SparseMatrixMPI{Float64}(A)
+F = ldlt(Adist)
+
+b = VectorMPI(collect(1.0:n))
+x = solve(F, b)
+
+x_full = Vector(x)
+residual = norm(A * x_full - collect(1.0:n), Inf)
+
+if rank == 0
+    println("Indefinite LDLT residual: $residual")
+end
+
+MPI.Finalize()
+```
+
+### Reusing Symbolic Factorization
+
+For sequences of matrices with the same sparsity pattern, the symbolic factorization is cached and reused:
+
+```julia
+using MPI
+MPI.Init()
+
+using LinearAlgebraMPI
+using SparseArrays
+using LinearAlgebra
+
+rank = MPI.Comm_rank(MPI.COMM_WORLD)
+
+n = 100
+I = [1:n; 1:n-1; 2:n]
+J = [1:n; 2:n; 1:n-1]
+
+# First matrix
+V1 = [4.0*ones(n); -ones(n-1); -ones(n-1)]
+A1 = sparse(I, J, V1, n, n)
+A1dist = SparseMatrixMPI{Float64}(A1)
+
+# First factorization - computes symbolic phase
+F1 = ldlt(A1dist; reuse_symbolic=true)
+
+# Second matrix - same structure, different values
+V2 = [8.0*ones(n); -2.0*ones(n-1); -2.0*ones(n-1)]
+A2 = sparse(I, J, V2, n, n)
+A2dist = SparseMatrixMPI{Float64}(A2)
+
+# Second factorization - reuses cached symbolic phase (faster)
+F2 = ldlt(A2dist; reuse_symbolic=true)
+
+# Both factorizations work
+b = VectorMPI(ones(n))
+x1 = solve(F1, b)
+x2 = solve(F2, b)
+
+if rank == 0
+    x1_full = Vector(x1)
+    x2_full = Vector(x2)
+    println("F1 residual: ", norm(A1 * x1_full - ones(n), Inf))
+    println("F2 residual: ", norm(A2 * x2_full - ones(n), Inf))
+end
+
+MPI.Finalize()
+```
+
 ## Plan Caching and Management
 
 ```julia
@@ -418,7 +594,11 @@ C2 = Adist * Bdist
 C3 = Adist * Bdist
 
 # Clear caches when done to free memory
-clear_plan_cache!()
+clear_plan_cache!()  # Clears all caches including factorization
+
+# Or clear specific caches:
+# clear_symbolic_cache!()           # Symbolic factorizations only
+# clear_factorization_plan_cache!() # Factorization plans only
 
 if rank == 0
     println("Cached multiplication completed")

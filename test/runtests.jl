@@ -67,4 +67,7 @@ end
     @testset "MPI Indexing" begin
         run_mpi_test(joinpath(@__DIR__, "test_indexing.jl"); nprocs=4, expect_success=true)
     end
+    @testset "MPI Factorization" begin
+        run_mpi_test(joinpath(@__DIR__, "test_factorization.jl"); nprocs=4, expect_success=true)
+    end
 end
