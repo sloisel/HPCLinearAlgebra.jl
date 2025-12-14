@@ -11,7 +11,6 @@ makedocs(
         "Home" => "index.md",
         "Getting Started" => "getting-started.md",
         "Examples" => "examples.md",
-        "Algorithms" => "algorithms.md",
         "API Reference" => "api.md",
     ],
     checkdocs = :exports,
