@@ -15,7 +15,7 @@ Distributed sparse matrix and vector operations using MPI for Julia. This packag
 - **Distributed dense vectors** (`VectorMPI{T}`) with flexible partitioning
 - **Matrix-matrix multiplication** (`A * B`) with memoized communication plans
 - **Matrix-vector multiplication** (`A * x`, `mul!(y, A, x)`)
-- **Sparse direct solvers**: LU and LDLT factorization using the multifrontal method
+- **Sparse direct solvers**: LU and LDLT factorization using MUMPS
 - **Lazy transpose** with optimized multiplication rules
 - **Matrix addition/subtraction** (`A + B`, `A - B`)
 - **Vector operations**: norms, reductions, arithmetic with automatic partition alignment
@@ -63,8 +63,7 @@ A_sym = A + transpose(A) + 10I  # Make symmetric positive definite
 A_sym_dist = SparseMatrixMPI{Float64}(A_sym)
 F = ldlt(A_sym_dist)  # LDLT factorization
 x_sol = solve(F, y)   # Solve A_sym * x_sol = y
-
-MPI.Finalize()
+finalize!(F)          # Release factorization resources
 ```
 
 ## Running with MPI

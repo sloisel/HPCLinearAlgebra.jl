@@ -47,7 +47,7 @@ function create_symmetric_indefinite(n::Int)
 end
 
 function create_2d_laplacian(nx::Int, ny::Int)
-    # 2D Laplacian on nx × ny grid - creates multiple supernodes with children
+    # 2D Laplacian on nx x ny grid
     n = nx * ny
     I_A = Int[]
     J_A = Int[]
@@ -128,12 +128,11 @@ A_full = create_general_tridiagonal(n)
 A = SparseMatrixMPI{Float64}(A_full)
 
 F = lu(A)
-@test F isa LinearAlgebraMPI.LUFactorizationMPI{Float64}
 @test size(F) == (n, n)
 
 b_full = ones(n)
 b = VectorMPI(b_full)
-x = F \ b  # Use backslash operator instead of solve() to test the \ interface
+x = F \ b
 
 x_full = Vector(x)
 residual = A_full * x_full - b_full
@@ -151,12 +150,11 @@ A_full = create_spd_tridiagonal(n)
 A = SparseMatrixMPI{Float64}(A_full)
 
 F = ldlt(A)
-@test F isa LinearAlgebraMPI.LDLTFactorizationMPI{Float64}
 @test size(F) == (n, n)
 
 b_full = ones(n)
 b = VectorMPI(b_full)
-x = F \ b  # Use backslash operator instead of solve() to test the \ interface
+x = F \ b
 
 x_full = Vector(x)
 residual = A_full * x_full - b_full
@@ -187,30 +185,27 @@ println(io0(), "  LDLT solve residual (indefinite): $err")
 @test err < TOL
 
 
-# Test 4: Plan reuse (same structure, different values)
-println(io0(), "[test] Plan reuse")
+# Test 4: Factorization reuse (multiple solves with same factorization)
+println(io0(), "[test] Factorization reuse")
 
 n = 8
-A1_full = create_spd_tridiagonal(n)
-A1 = SparseMatrixMPI{Float64}(A1_full)
-F1 = ldlt(A1; reuse_symbolic=true)
+A_full = create_spd_tridiagonal(n)
+A = SparseMatrixMPI{Float64}(A_full)
+F = ldlt(A)
 
-A2_full = create_spd_tridiagonal(n)
-A2_full.nzval .*= 2.0
-A2 = SparseMatrixMPI{Float64}(A2_full)
-F2 = ldlt(A2; reuse_symbolic=true)
+b1_full = ones(n)
+b1 = VectorMPI(b1_full)
+x1 = solve(F, b1)
 
-b_full = ones(n)
-b = VectorMPI(b_full)
-
-x1 = solve(F1, b)
-x2 = solve(F2, b)
+b2_full = collect(1.0:n)
+b2 = VectorMPI(b2_full)
+x2 = solve(F, b2)
 
 x1_full = Vector(x1)
 x2_full = Vector(x2)
 
-err1 = norm(A1_full * x1_full - b_full, Inf)
-err2 = norm(A2_full * x2_full - b_full, Inf)
+err1 = norm(A_full * x1_full - b1_full, Inf)
+err2 = norm(A_full * x2_full - b2_full, Inf)
 
 println(io0(), "  Residual 1: $err1")
 println(io0(), "  Residual 2: $err2")
@@ -240,15 +235,15 @@ err = norm(residual, Inf)
 println(io0(), "  LU solve residual (complex): $err")
 @test err < TOL
 
-# Setup for transpose/adjoint/division tests
+
+# Test 6: Transpose solve - transpose(A) \ b
+println(io0(), "[test] Transpose solve")
+
 n = 8
 A_full = create_general_tridiagonal(n)
 A = SparseMatrixMPI{Float64}(A_full)
 b_full = ones(n)
 b = VectorMPI(b_full)
-
-# Test 7: Transpose solve - transpose(A) \ b
-println(io0(), "[test] Transpose solve")
 
 x_t = transpose(A) \ b
 
@@ -260,7 +255,7 @@ println(io0(), "  Transpose solve residual: $err_t")
 @test err_t < TOL
 
 
-# Test 8: Adjoint solve - A' \ b
+# Test 7: Adjoint solve - A' \ b
 println(io0(), "[test] Adjoint solve")
 
 x_a = A' \ b
@@ -273,16 +268,13 @@ println(io0(), "  Adjoint solve residual: $err_a")
 @test err_a < TOL
 
 
-# (Test 9 removed - factorization transpose/adjoint for LU was deleted)
-
-# Test 10: Right division - transpose(v) / A
+# Test 8: Right division - transpose(v) / A
 println(io0(), "[test] Right division - transpose(v) / A")
 
 # transpose(v) / A solves x * A = transpose(v)
 x_rd = transpose(b) / A
 
 # Verify: x * A should equal transpose(b)
-# x is a transposed VectorMPI, so x.parent * A should give b
 x_rd_parent = x_rd.parent
 x_rd_full = Vector(x_rd_parent)
 residual_rd = x_rd_full' * A_full - b_full'
@@ -292,7 +284,7 @@ println(io0(), "  Right division residual: $err_rd")
 @test err_rd < TOL
 
 
-# Test 11: Right division - transpose(v) / transpose(A)
+# Test 9: Right division - transpose(v) / transpose(A)
 println(io0(), "[test] Right division - transpose(v) / transpose(A)")
 
 x_rdt = transpose(b) / transpose(A)
@@ -304,87 +296,47 @@ println(io0(), "  Right division (transpose) residual: $err_rdt")
 @test err_rdt < TOL
 
 
-# Test 12: Right division - v' / A (adjoint)
-println(io0(), "[test] Right division - v' / A")
+# Test 10: 2D Laplacian (larger problem)
+println(io0(), "[test] LDLT factorization - 2D Laplacian")
 
-x_rda = b' / A
-x_rda_full = Vector(x_rda.parent)
-residual_rda = x_rda_full' * A_full - b_full'
-err_rda = norm(residual_rda, Inf)
+A_2d_full = create_2d_laplacian(6, 6)  # 36-element grid
+A_2d = SparseMatrixMPI{Float64}(A_2d_full)
 
-println(io0(), "  Right division (adjoint) residual: $err_rda")
-@test err_rda < TOL
+F_2d = ldlt(A_2d)
 
+b_2d_full = ones(36)
+b_2d = VectorMPI(b_2d_full)
+x_2d = solve(F_2d, b_2d)
 
-# Test 13: Right division - v' / A'
-println(io0(), "[test] Right division - v' / A'")
+x_2d_full = Vector(x_2d)
+residual_2d = A_2d_full * x_2d_full - b_2d_full
+err_2d = norm(residual_2d, Inf)
 
-x_rdaa = b' / A'
-x_rdaa_full = Vector(x_rdaa.parent)
-residual_rdaa = x_rdaa_full' * A_full' - b_full'
-err_rdaa = norm(residual_rdaa, Inf)
-
-println(io0(), "  Right division (adjoint/adjoint) residual: $err_rdaa")
-@test err_rdaa < TOL
+println(io0(), "  2D Laplacian LDLT residual: $err_2d")
+@test err_2d < TOL
 
 
-# Test 13b: Right division - transpose(v) / A' (complex)
-# Tests the complex branch: x = conj(A \ conj(v))
-println(io0(), "[test] Right division - transpose(v) / A' (complex)")
+# Test 11: LU with 2D Laplacian
+println(io0(), "[test] LU factorization - 2D Laplacian")
 
-n = 6
-A_cx_full = Complex{Float64}.(create_general_tridiagonal(n)) + im * spdiagm(0 => 0.1*ones(n))
-A_cx = SparseMatrixMPI{ComplexF64}(A_cx_full)
-b_cx_full = ComplexF64.(1:n) .+ im .* ComplexF64.(n:-1:1)
-b_cx = VectorMPI(b_cx_full)
+A_2d_lu_full = create_2d_laplacian(5, 5)  # 25-element grid
+A_2d_lu = SparseMatrixMPI{Float64}(A_2d_lu_full)
 
-# transpose(v) / A' solves x * A' = transpose(v)
-x_tac = transpose(b_cx) / A_cx'
-x_tac_full = Vector(x_tac.parent)
-# x_tac represents transpose(x_col), so use transpose (not adjoint) for verification
-residual_tac = transpose(x_tac_full) * A_cx_full' - transpose(b_cx_full)
-err_tac = norm(residual_tac, Inf)
+F_2d_lu = lu(A_2d_lu)
 
-println(io0(), "  Right division (transpose/adjoint complex) residual: $err_tac")
-@test err_tac < TOL
+b_2d_lu_full = ones(25)
+b_2d_lu = VectorMPI(b_2d_lu_full)
+x_2d_lu = solve(F_2d_lu, b_2d_lu)
 
+x_2d_lu_full = Vector(x_2d_lu)
+residual_2d_lu = A_2d_lu_full * x_2d_lu_full - b_2d_lu_full
+err_2d_lu = norm(residual_2d_lu, Inf)
 
-# Test 13c: Right division - v' / transpose(A) (complex)
-# Tests the complex branch: x = conj(A) \ v
-println(io0(), "[test] Right division - v' / transpose(A) (complex)")
-
-# v' / transpose(A) solves x * transpose(A) = v'
-x_at = b_cx' / transpose(A_cx)
-x_at_full = Vector(x_at.parent)
-# x_at represents transpose(x_col), so use transpose (not adjoint) for verification
-residual_at = transpose(x_at_full) * transpose(A_cx_full) - b_cx_full'
-err_at = norm(residual_at, Inf)
-
-println(io0(), "  Right division (adjoint/transpose complex) residual: $err_at")
-@test err_at < TOL
+println(io0(), "  2D Laplacian LU residual: $err_2d_lu")
+@test err_2d_lu < TOL
 
 
-# Test 14: LDLT transpose solve via factorization (real symmetric)
-println(io0(), "[test] LDLT factorization transpose")
-
-n = 10
-A_ldlt_full = create_spd_tridiagonal(n)
-A_ldlt = SparseMatrixMPI{Float64}(A_ldlt_full)
-F_ldlt = ldlt(A_ldlt)
-
-b_ldlt_full = ones(n)
-b_ldlt = VectorMPI(b_ldlt_full)
-
-# transpose(F) \ b should solve transpose(A) * x = b (same as A * x = b for symmetric)
-x_ldlt_t = transpose(F_ldlt) \ b_ldlt
-x_ldlt_t_full = Vector(x_ldlt_t)
-err_ldlt_t = norm(A_ldlt_full * x_ldlt_t_full - b_ldlt_full, Inf)
-
-println(io0(), "  LDLT transpose solve residual: $err_ldlt_t")
-@test err_ldlt_t < TOL
-
-
-# Test 15: Complex symmetric LDLT
+# Test 12: Complex symmetric LDLT
 println(io0(), "[test] LDLT factorization - complex symmetric")
 
 n = 6
@@ -405,71 +357,14 @@ println(io0(), "  Complex symmetric LDLT residual: $err_cx")
 @test err_cx < TOL
 
 
-# (Test 16 removed - complex symmetric LDLT adjoint solve was deleted)
+# Test 13: Block diagonal matrix (multiple disconnected components)
+println(io0(), "[test] Block diagonal matrix")
 
-# Test 17: 2D Laplacian - exercises extend_add_sym! with supernode children
-println(io0(), "[test] LDLT factorization - 2D Laplacian (supernode extend-add)")
-
-A_2d_full = create_2d_laplacian(6, 6)  # 36-element grid
-A_2d = SparseMatrixMPI{Float64}(A_2d_full)
-
-F_2d = ldlt(A_2d)
-
-b_2d_full = ones(36)
-b_2d = VectorMPI(b_2d_full)
-x_2d = solve(F_2d, b_2d)
-
-x_2d_full = Vector(x_2d)
-residual_2d = A_2d_full * x_2d_full - b_2d_full
-err_2d = norm(residual_2d, Inf)
-
-println(io0(), "  2D Laplacian LDLT residual: $err_2d")
-@test err_2d < TOL
-
-
-# Test 18: LDLT with 2x2 Bunch-Kaufman pivots
-# Uses a dense symmetric indefinite matrix with small diagonal to force 2x2 pivots
-println(io0(), "[test] LDLT with 2x2 Bunch-Kaufman pivots")
-
-n_bk = 4
-A_bk = zeros(n_bk, n_bk)
-for i in 1:n_bk
-    A_bk[i, i] = 1e-16  # Tiny diagonal forces 2x2 pivot selection
-    for j in i+1:n_bk
-        A_bk[i, j] = 1.0 + 0.1 * (i + j)  # Large off-diagonal
-        A_bk[j, i] = A_bk[i, j]
-    end
-end
-A_bk_sp = sparse(A_bk)
-A_bk_mpi = SparseMatrixMPI{Float64}(A_bk_sp)
-
-F_bk = ldlt(A_bk_mpi)
-
-# Verify 2x2 pivots were used (pivots[k] < 0 indicates 2x2 pivot)
-has_2x2_pivots = any(F_bk.pivots .< 0)
-@test has_2x2_pivots
-
-b_bk_full = ones(n_bk)
-b_bk = VectorMPI(b_bk_full)
-x_bk = solve(F_bk, b_bk)
-x_bk_full = Vector(x_bk)
-err_bk = norm(A_bk_sp * x_bk_full - b_bk_full, Inf)
-
-println(io0(), "  2x2 pivots used: $has_2x2_pivots")
-println(io0(), "  Bunch-Kaufman LDLT residual: $err_bk")
-@test err_bk < TOL
-
-
-# Test 19: Multi-rank supernode distribution
-# Uses block diagonal matrix to create multiple elimination tree roots
-println(io0(), "[test] Multi-rank supernode distribution")
-
-# Create 2-block diagonal matrix (disconnected components)
 block_size = 10
 n_multi = 2 * block_size
 A_multi = spzeros(n_multi, n_multi)
-for b in 0:1
-    offset = b * block_size
+for b_idx in 0:1
+    offset = b_idx * block_size
     for i in 1:block_size
         A_multi[offset + i, offset + i] = 4.0
         if i > 1
@@ -482,279 +377,55 @@ A_multi_mpi = SparseMatrixMPI{Float64}(A_multi)
 
 F_multi = ldlt(A_multi_mpi)
 
-# Verify multi-rank distribution (supernodes on different ranks)
-unique_owners = unique(F_multi.symbolic.snode_owner)
-has_multi_rank = length(unique_owners) > 1 && nranks > 1
-
-# Note: multi-rank is expected only if running with 2+ ranks
-if nranks > 1
-    @test has_multi_rank
-end
-
 b_multi_full = ones(n_multi)
 b_multi = VectorMPI(b_multi_full)
 x_multi = solve(F_multi, b_multi)
 x_multi_full = Vector(x_multi)
 err_multi = norm(A_multi * x_multi_full - b_multi_full, Inf)
 
-println(io0(), "  Multi-rank distribution: $has_multi_rank (nranks=$nranks)")
 println(io0(), "  Block diagonal LDLT residual: $err_multi")
 @test err_multi < TOL
 
 
-# Test 20: LU with 2D Laplacian - exercises extend_add! (unsymmetric version)
-println(io0(), "[test] LU factorization - 2D Laplacian (extend_add!)")
+# Test 14: Larger problem size
+println(io0(), "[test] Larger problem size (100x100 grid)")
 
-A_2d_lu_full = create_2d_laplacian(5, 5)  # 25-element grid
-A_2d_lu = SparseMatrixMPI{Float64}(A_2d_lu_full)
+A_large_full = create_2d_laplacian(10, 10)  # 100 DOF
+A_large = SparseMatrixMPI{Float64}(A_large_full)
 
-F_2d_lu = lu(A_2d_lu)
+F_large = ldlt(A_large)
 
-b_2d_lu_full = ones(25)
-b_2d_lu = VectorMPI(b_2d_lu_full)
-x_2d_lu = solve(F_2d_lu, b_2d_lu)
+b_large_full = ones(100)
+b_large = VectorMPI(b_large_full)
+x_large = solve(F_large, b_large)
 
-x_2d_lu_full = Vector(x_2d_lu)
-residual_2d_lu = A_2d_lu_full * x_2d_lu_full - b_2d_lu_full
-err_2d_lu = norm(residual_2d_lu, Inf)
+x_large_full = Vector(x_large)
+residual_large = A_large_full * x_large_full - b_large_full
+err_large = norm(residual_large, Inf)
 
-println(io0(), "  2D Laplacian LU residual: $err_2d_lu")
-@test err_2d_lu < TOL
-
-
-# Test 21: LU with partial pivoting - matrix requiring row swaps
-# Off-diagonal elements larger than diagonal forces pivot selection
-println(io0(), "[test] LU with row pivoting")
-
-n_piv = 6
-A_piv = zeros(n_piv, n_piv)
-for i in 1:n_piv
-    A_piv[i, i] = 0.1  # Small diagonal
-    if i < n_piv
-        A_piv[i+1, i] = 2.0  # Large sub-diagonal (will be selected as pivot)
-        A_piv[i, i+1] = 1.5  # Upper diagonal
-    end
-end
-# Make it non-singular by adjusting
-A_piv[n_piv, n_piv] = 2.0
-A_piv_sp = sparse(A_piv)
-A_piv_mpi = SparseMatrixMPI{Float64}(A_piv_sp)
-
-F_piv = lu(A_piv_mpi)
-
-b_piv_full = ones(n_piv)
-b_piv = VectorMPI(b_piv_full)
-x_piv = solve(F_piv, b_piv)
-x_piv_full = Vector(x_piv)
-err_piv = norm(A_piv_sp * x_piv_full - b_piv_full, Inf)
-
-println(io0(), "  LU with pivoting residual: $err_piv")
-@test err_piv < TOL
+println(io0(), "  100 DOF LDLT residual: $err_large")
+@test err_large < TOL
 
 
-# Test 22: LU with near-zero pivot (triggers small pivot warning path)
-println(io0(), "[test] LU with small pivot")
+# Test 15: solve! (in-place solve)
+println(io0(), "[test] solve! (in-place)")
 
-n_small = 4
-A_small = zeros(n_small, n_small)
-A_small[1, 1] = 1e-20  # Very small pivot
-A_small[1, 2] = 1e-21  # Even smaller off-diagonal so no swap
-A_small[2, 1] = 1e-21
-A_small[2, 2] = 1.0
-A_small[2, 3] = -0.5
-A_small[3, 2] = -0.5
-A_small[3, 3] = 1.0
-A_small[3, 4] = -0.5
-A_small[4, 3] = -0.5
-A_small[4, 4] = 1.0
-A_small_sp = sparse(A_small)
-A_small_mpi = SparseMatrixMPI{Float64}(A_small_sp)
+n = 8
+A_full = create_spd_tridiagonal(n)
+A = SparseMatrixMPI{Float64}(A_full)
+F = ldlt(A)
 
-# This should trigger the small pivot warning but still succeed
-F_small = lu(A_small_mpi)
+b_full = ones(n)
+b = VectorMPI(b_full)
+x = VectorMPI(zeros(n))
 
-b_small_full = [1e-20, 1.0, 1.0, 1.0]  # Scale first element with matrix
-b_small = VectorMPI(b_small_full)
-x_small = solve(F_small, b_small)
-x_small_full = Vector(x_small)
-err_small = norm(A_small_sp * x_small_full - b_small_full, Inf)
+solve!(x, F, b)
 
-println(io0(), "  LU with small pivot residual: $err_small")
-# Use looser tolerance due to ill-conditioning
-@test err_small < 1e-6
+x_full = Vector(x)
+err = norm(A_full * x_full - b_full, Inf)
 
-
-# Test 23: LU with exactly zero pivot (tests abs(diag_val) == 0 branch)
-println(io0(), "[test] LU with zero pivot")
-
-n_zero = 4
-A_zero = zeros(n_zero, n_zero)
-A_zero[1, 1] = 0.0  # Exactly zero pivot - will be replaced by eps
-A_zero[1, 2] = 0.0  # Zero off-diagonal so no pivot swap
-A_zero[2, 1] = 0.0
-A_zero[2, 2] = 1.0
-A_zero[2, 3] = -0.5
-A_zero[3, 2] = -0.5
-A_zero[3, 3] = 1.0
-A_zero[3, 4] = -0.5
-A_zero[4, 3] = -0.5
-A_zero[4, 4] = 1.0
-A_zero_sp = sparse(A_zero)
-A_zero_mpi = SparseMatrixMPI{Float64}(A_zero_sp)
-
-# This should trigger zero pivot replacement and warning
-F_zero = lu(A_zero_mpi)
-
-# The factorization will have modified the pivot, so solve will work
-# but the original matrix is singular, so we just test that solve completes
-b_zero_full = [0.0, 1.0, 1.0, 1.0]  # RHS consistent with singular row
-b_zero = VectorMPI(b_zero_full)
-x_zero = solve(F_zero, b_zero)
-x_zero_full = Vector(x_zero)
-
-println(io0(), "  LU with zero pivot: solve completed")
-@test length(x_zero_full) == n_zero  # Just verify solve completes
-
-
-# Test 24: LDLT with exactly zero 1x1 pivot (tests abs(d_kk) == 0 branch)
-println(io0(), "[test] LDLT with zero 1x1 pivot")
-
-n_ldlt_zero = 4
-A_ldlt_zero = zeros(n_ldlt_zero, n_ldlt_zero)
-# Create symmetric matrix with zero diagonal that will trigger 1x1 pivot
-# (no larger off-diagonal in column to trigger 2x2)
-A_ldlt_zero[1, 1] = 0.0  # Zero pivot
-A_ldlt_zero[2, 2] = 2.0
-A_ldlt_zero[3, 3] = 2.0
-A_ldlt_zero[4, 4] = 2.0
-# Small symmetric off-diagonals (smaller than alpha * |diagonal|)
-A_ldlt_zero[2, 1] = 0.0
-A_ldlt_zero[1, 2] = 0.0
-A_ldlt_zero[3, 2] = -0.1
-A_ldlt_zero[2, 3] = -0.1
-A_ldlt_zero[4, 3] = -0.1
-A_ldlt_zero[3, 4] = -0.1
-A_ldlt_zero_sp = sparse(A_ldlt_zero)
-A_ldlt_zero_mpi = SparseMatrixMPI{Float64}(A_ldlt_zero_sp)
-
-F_ldlt_zero = ldlt(A_ldlt_zero_mpi)
-
-b_ldlt_zero_full = [0.0, 1.0, 1.0, 1.0]
-b_ldlt_zero = VectorMPI(b_ldlt_zero_full)
-x_ldlt_zero = solve(F_ldlt_zero, b_ldlt_zero)
-x_ldlt_zero_full = Vector(x_ldlt_zero)
-
-println(io0(), "  LDLT with zero 1x1 pivot: solve completed")
-@test length(x_ldlt_zero_full) == n_ldlt_zero
-
-
-# Test 25: LDLT with near-zero 2x2 pivot determinant
-# Uses similar structure to Test 18 but with det(2x2 block) ≈ 0
-println(io0(), "[test] LDLT with small 2x2 determinant")
-
-n_det = 4
-A_det = zeros(n_det, n_det)
-# Create a 2x2 block at (1,2) with det ≈ 0
-# det = a11*a22 - a12^2 = 1e-16 * 1e-16 - (1e-16)^2 = 0
-A_det[1, 1] = 1e-16   # Tiny diagonal
-A_det[2, 2] = 1e-16   # Tiny diagonal
-A_det[2, 1] = 1e-16   # Off-diagonal: makes det = 1e-32 - 1e-32 = 0
-A_det[1, 2] = 1e-16
-# Large off-diagonals to force 2x2 pivot selection (like Test 18)
-for i in 1:n_det
-    for j in i+1:n_det
-        if (i <= 2 && j <= 2)
-            continue  # Skip the 2x2 block we already set
-        end
-        A_det[i, j] = 1.0 + 0.1 * (i + j)
-        A_det[j, i] = A_det[i, j]
-    end
-end
-A_det[3, 3] = 1e-16  # Small diagonals throughout
-A_det[4, 4] = 1e-16
-A_det_sp = sparse(A_det)
-A_det_mpi = SparseMatrixMPI{Float64}(A_det_sp)
-
-F_det = ldlt(A_det_mpi)
-
-# Check that 2x2 pivot was used
-has_2x2_det = any(F_det.pivots .< 0)
-
-println(io0(), "  2x2 pivot used: $has_2x2_det")
-@test has_2x2_det  # Should use 2x2 pivots
-
-b_det_full = ones(n_det)
-b_det = VectorMPI(b_det_full)
-x_det = solve(F_det, b_det)
-x_det_full = Vector(x_det)
-
-println(io0(), "  LDLT with small 2x2 determinant: solve completed")
-@test length(x_det_full) == n_det
-
-
-# Test 26: Test swap_rows_cols_sym! with i==j (no-op branch)
-# This occurs when Bunch-Kaufman selects the diagonal element as pivot
-println(io0(), "[test] LDLT diagonal pivot (no swap)")
-
-n_diag = 4
-A_diag = zeros(n_diag, n_diag)
-# Diagonally dominant: diagonal element will be selected as pivot without swap
-A_diag[1, 1] = 10.0  # Large diagonal
-A_diag[2, 2] = 10.0
-A_diag[3, 3] = 10.0
-A_diag[4, 4] = 10.0
-A_diag[2, 1] = -0.1  # Small off-diagonals
-A_diag[1, 2] = -0.1
-A_diag[3, 2] = -0.1
-A_diag[2, 3] = -0.1
-A_diag[4, 3] = -0.1
-A_diag[3, 4] = -0.1
-A_diag_sp = sparse(A_diag)
-A_diag_mpi = SparseMatrixMPI{Float64}(A_diag_sp)
-
-F_diag = ldlt(A_diag_mpi)
-
-b_diag_full = ones(n_diag)
-b_diag = VectorMPI(b_diag_full)
-x_diag = solve(F_diag, b_diag)
-x_diag_full = Vector(x_diag)
-err_diag = norm(A_diag_sp * x_diag_full - b_diag_full, Inf)
-
-println(io0(), "  Diagonal pivot residual: $err_diag")
-@test err_diag < TOL
-
-
-# Test 27: LDLT 2x2 pivot with update rows - exercises extract_L_D! else branch
-# Need a matrix where 2x2 pivots are used and there are update rows
-println(io0(), "[test] LDLT 2x2 pivot with update structure")
-
-# Use a 2D Laplacian variant that forces 2x2 pivots with update rows
-# The AMD ordering creates supernodes with children, and we make diagonals
-# small to force 2x2 pivot selection
-A_2x2_base = create_2d_laplacian(3, 3)  # 9 nodes
-A_2x2 = Matrix(A_2x2_base)
-# Make first two diagonal elements very small to force 2x2 pivot
-A_2x2[1, 1] = 1e-16
-A_2x2[2, 2] = 1e-16
-# But keep the off-diagonal between them
-A_2x2[2, 1] = -1.0
-A_2x2[1, 2] = -1.0
-A_2x2_sp = sparse(A_2x2)
-A_2x2_mpi = SparseMatrixMPI{Float64}(A_2x2_sp)
-
-F_2x2 = ldlt(A_2x2_mpi)
-
-# Check 2x2 pivots were used
-has_2x2_update = any(F_2x2.pivots .< 0)
-
-b_2x2_full = ones(9)
-b_2x2 = VectorMPI(b_2x2_full)
-x_2x2 = solve(F_2x2, b_2x2)
-x_2x2_full = Vector(x_2x2)
-
-println(io0(), "  2x2 pivots with updates used: $has_2x2_update")
-println(io0(), "  LDLT 2x2 with updates: solve completed")
-@test length(x_2x2_full) == 9
+println(io0(), "  solve! residual: $err")
+@test err < TOL
 
 end  # QuietTestSet
 
@@ -766,7 +437,5 @@ MPI.Allreduce!(local_counts, global_counts, +, comm)
 total = sum(global_counts)
 println(io0(), "\nTest Summary: distributed factorization | Pass: $(global_counts[1])  Fail: $(global_counts[2])  Error: $(global_counts[3])  Broken: $(global_counts[4])  Skip: $(global_counts[5])  Total: $total")
 
-MPI.Finalize()
-
-exit_code = global_counts[2] + global_counts[3] > 0 ? 1 : 0
-exit(exit_code)
+# MPI.Finalize() is called automatically by MPI.jl's atexit hook on clean exit
+# Note: Exit code is determined by runtests.jl checking the output for Pass/Fail counts

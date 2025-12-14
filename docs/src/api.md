@@ -401,50 +401,37 @@ SparseMatrixMPI_local
 
 ## Factorization
 
-LinearAlgebraMPI provides distributed sparse direct solvers using the multifrontal method.
+LinearAlgebraMPI provides distributed sparse direct solvers using MUMPS (MUltifrontal Massively Parallel Solver).
 
 ### LU Factorization
 
 ```julia
-F = lu(A::SparseMatrixMPI{T}; reuse_symbolic=true) -> LUFactorizationMPI{T}
+F = lu(A::SparseMatrixMPI{T})
 ```
 
-Compute LU factorization of a distributed sparse matrix using the multifrontal method with:
-- AMD fill-reducing ordering
-- Partial pivoting for numerical stability
-- MUMPS-style subtree-to-rank mapping
-
-If `reuse_symbolic=true` (default), caches and reuses symbolic factorization for matrices with the same sparsity pattern.
+Compute LU factorization of a distributed sparse matrix using MUMPS. Suitable for general (non-symmetric) matrices.
 
 ### LDLT Factorization
 
 ```julia
-F = ldlt(A::SparseMatrixMPI{T}; reuse_symbolic=true) -> LDLTFactorizationMPI{T}
+F = ldlt(A::SparseMatrixMPI{T})
 ```
 
-Compute LDLT factorization of a distributed symmetric sparse matrix using the multifrontal method with:
-- AMD fill-reducing ordering
-- Bunch-Kaufman pivoting for numerical stability with indefinite matrices
-- MUMPS-style subtree-to-rank mapping
-
-The factorization computes `P' * L * D * L^T * P` which equals the symmetrically permuted matrix (A reordered by the fill-reducing permutation `perm`).
+Compute LDLT factorization of a distributed symmetric sparse matrix using MUMPS. More efficient than LU for symmetric matrices.
 
 Note: Uses transpose (`L^T`), not adjoint (`L*`). Correct for real symmetric and complex symmetric matrices, but NOT for complex Hermitian matrices.
-
-### Factorization Types
-
-```@docs
-LUFactorizationMPI
-LDLTFactorizationMPI
-SymbolicFactorization
-```
 
 ### Solving Linear Systems
 
 ```@docs
 solve
 solve!
-solve_transpose
+```
+
+### Releasing Factorization Resources
+
+```@docs
+finalize!
 ```
 
 ### Usage Examples
@@ -469,10 +456,14 @@ x = solve(F, b)
 # Or use backslash
 x = F \ b
 
+# Release factorization resources when done
+finalize!(F)
+
 # For non-symmetric matrices, use LU
 A_nonsym = SparseMatrixMPI{Float64}(sprand(1000, 1000, 0.01) + 10I)
 F_lu = lu(A_nonsym)
-x = solve(F_lu, b)
+x = F_lu \ b
+finalize!(F_lu)
 ```
 
 ### Direct Solve Syntax
@@ -488,40 +479,14 @@ x = A' \ b              # solve A'*x = b
 # Right division: solve x*A = b (for row vectors)
 x = transpose(b) / A           # solve x*A = transpose(b)
 x = transpose(b) / transpose(A)  # solve x*transpose(A) = transpose(b)
-x = b' / A                     # solve x*A = b'
-x = b' / A'                    # solve x*A' = b'
 ```
 
-### Plan Reuse
-
-The symbolic factorization (fill-reducing ordering, elimination tree, supernode detection) is cached and reused for matrices with the same sparsity pattern:
-
-```julia
-# First factorization computes symbolic phase
-F1 = ldlt(A1; reuse_symbolic=true)
-
-# Second factorization with same structure reuses symbolic phase
-A2 = SparseMatrixMPI{Float64}(A2_local)  # Same structure, different values
-F2 = ldlt(A2; reuse_symbolic=true)  # Faster - reuses cached symbolic
-```
+Note: One-shot solves like `A \ b` automatically clean up the factorization. For repeated solves with the same matrix, compute the factorization once with `lu()` or `ldlt()`, reuse it, then call `finalize!()` when done.
 
 ## Cache Management
 
 ```@docs
 clear_plan_cache!
-clear_symbolic_cache!
-clear_solve_plan_cache!
-clear_input_plan_cache!
-```
-
-## Distributed Solve (Advanced)
-
-These functions provide direct access to the distributed solve implementation.
-Most users should use `solve` or `\` instead.
-
-```@docs
-distributed_solve_lu!
-distributed_solve_ldlt!
 ```
 
 ## Full API Index

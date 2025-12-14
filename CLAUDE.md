@@ -82,26 +82,15 @@ Many operations in this module are collective and should not be run on a subset 
 - Memoized based on structural hashes of A and x (see `_vector_plan_cache`)
 - Pre-allocates all send/receive buffers for allocation-free `execute_plan!` calls
 
-### Factorization Types
+### Factorization
 
-**SymbolicFactorization**
-- Result of symbolic factorization phase, computed once per sparsity pattern
-- Contains fill-reducing permutation (AMD), supernodes, elimination tree, and rank assignments
-- Identical across all MPI ranks; cached in `_symbolic_cache`
+Factorization uses MUMPS (MUltifrontal Massively Parallel Solver) with distributed matrix input (ICNTL(18)=3).
 
-**LUFactorizationMPI{T}**
-- Distributed LU factorization result for general matrices
-- Each rank stores L and U factors for supernodes it owns
-- Includes row permutation from partial pivoting
-
-**LDLTFactorizationMPI{T}**
-- Distributed LDLT factorization result for symmetric matrices
-- Supports Bunch-Kaufman pivoting with 1×1 and 2×2 diagonal blocks
-- Uses transpose (not adjoint) - correct for real symmetric and complex symmetric matrices
-
-**SolvePlan{T}**
-- Communication plan for distributed triangular solves
-- Precomputes cross-rank communication at subtree boundaries
+**MUMPSFactorizationMPI{T}** (internal type, not exported)
+- Wraps a MUMPS object for distributed factorization
+- Created by `lu(A)` for general matrices or `ldlt(A)` for symmetric matrices
+- Stores COO arrays (irn_loc, jcn_loc, a_loc) to prevent GC while MUMPS holds pointers
+- Call `finalize!(F)` to release resources, or let GC handle cleanup
 
 ### Local Constructors
 

@@ -3,6 +3,7 @@ module LinearAlgebraMPI
 using MPI
 using Blake3Hash
 using SparseArrays
+using MUMPS
 import SparseArrays: nnz, issparse, dropzeros, spdiagm, blockdiag
 import LinearAlgebra
 import LinearAlgebra: tr, diag, triu, tril, Transpose, Adjoint, norm, opnorm, mul!, ldlt, BLAS
@@ -13,12 +14,8 @@ export VectorMPI_local, MatrixMPI_local, SparseMatrixMPI_local  # Local construc
 export mean  # Our mean function for SparseMatrixMPI and VectorMPI
 export io0   # Utility for rank-selective output
 
-# Factorization exports
-export LUFactorizationMPI, LDLTFactorizationMPI, SymbolicFactorization
-export solve, solve!, solve_transpose
-export clear_symbolic_cache!, clear_solve_plan_cache!
-export distributed_solve_lu!, distributed_solve_ldlt!  # Distributed solve without gathering
-export clear_input_plan_cache!  # Factorization input plan cache
+# Factorization exports (generic interface, implementation details hidden)
+export solve, solve!, finalize!
 
 # Type alias for 256-bit Blake3 hash
 const Blake3Hash = NTuple{32,UInt8}
@@ -43,7 +40,7 @@ const _dense_transpose_plan_cache = Dict{Tuple{Blake3Hash,DataType},Any}()
 """
     clear_plan_cache!()
 
-Clear all memoized plan caches (including factorization caches).
+Clear all memoized plan caches.
 """
 function clear_plan_cache!()
     empty!(_plan_cache)
@@ -56,15 +53,6 @@ function clear_plan_cache!()
     end
     if isdefined(@__MODULE__, :_addition_plan_cache)
         empty!(_addition_plan_cache)
-    end
-    if isdefined(@__MODULE__, :_symbolic_cache)
-        empty!(_symbolic_cache)
-    end
-    if isdefined(@__MODULE__, :_solve_plan_cache)
-        empty!(_solve_plan_cache)
-    end
-    if isdefined(@__MODULE__, :_input_plan_cache)
-        empty!(_input_plan_cache)
     end
 end
 
@@ -117,15 +105,8 @@ include("sparse.jl")
 include("blocks.jl")
 include("indexing.jl")
 
-# Include factorization files (order matters: types, then utils, then symbolic, then numeric, then solve)
-include("factorization_types.jl")
-include("factorization_utils.jl")
-include("symbolic.jl")
-include("numeric_lu.jl")
-include("numeric_ldlt.jl")
-include("solve.jl")
-include("solve_plan.jl")
-include("factorization_input.jl")
+# Include MUMPS factorization module
+include("mumps_factorization.jl")
 
 # ============================================================================
 # Direct Solve Interface (A \ b)
@@ -140,7 +121,9 @@ the factorization once with `lu(A)` or `ldlt(A)` and reuse it.
 """
 function Base.:\(A::SparseMatrixMPI{T}, b::VectorMPI{T}) where T
     F = LinearAlgebra.lu(A)
-    return F \ b
+    x = F \ b
+    MUMPS.finalize!(F.mumps)
+    return x
 end
 
 """
@@ -153,7 +136,9 @@ function Base.:\(At::Transpose{T,SparseMatrixMPI{T}}, b::VectorMPI{T}) where T
     # Materialize the transpose and factorize directly
     A_t = materialize_transpose(At.parent)
     F = LinearAlgebra.lu(A_t)
-    return F \ b
+    x = F \ b
+    MUMPS.finalize!(F.mumps)
+    return x
 end
 
 # ============================================================================

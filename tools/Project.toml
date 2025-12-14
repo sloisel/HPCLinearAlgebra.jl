@@ -1,0 +1,13 @@
+[deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+LinearAlgebraMPI = "5bdd2be4-ae34-42ef-8b36-f4c85d48f377"
+MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
+SafePETSc = "50acdc01-ce88-4ca7-bd87-6916c254362e"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+
+[sources.LinearAlgebraMPI]
+path = ".."
+
+[sources.SafePETSc]
+path = "../../SafePETSc.jl"
