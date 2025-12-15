@@ -44,7 +44,6 @@ F = 2.0 * Adist      # Scalar multiplication
 frobenius_norm = norm(Adist)
 max_col_sum = opnorm(Adist, 1)
 
-MPI.Finalize()
 ```
 
 ## Package Overview

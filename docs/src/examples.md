@@ -39,7 +39,6 @@ err = norm(Cdist - C_ref_dist, Inf)
 
 println(io0(), "Multiplication error: $err")
 
-MPI.Finalize()
 ```
 
 ### Non-Square Matrices
@@ -74,7 +73,6 @@ Cdist = Adist * Bdist
 
 println(io0(), "Result size: $(size(Cdist))")
 
-MPI.Finalize()
 ```
 
 ## Complex Matrices
@@ -117,7 +115,6 @@ result = Aadj * Bdist
 
 println(io0(), "Complex matrix operations completed")
 
-MPI.Finalize()
 ```
 
 ## Addition and Subtraction
@@ -160,7 +157,6 @@ err = norm(Cdist - C_ref_dist, Inf)
 
 println(io0(), "Addition error: $err")
 
-MPI.Finalize()
 ```
 
 ## Transpose Operations
@@ -197,7 +193,6 @@ result = transpose(Cdist) * transpose(Ddist)
 
 println(io0(), "Lazy transpose multiplication completed")
 
-MPI.Finalize()
 ```
 
 ### Transpose in Multiplication
@@ -237,7 +232,6 @@ err = norm(result_dist - ref_dist, Inf)
 
 println(io0(), "transpose(A) * B error: $err")
 
-MPI.Finalize()
 ```
 
 ## Scalar Multiplication
@@ -274,7 +268,6 @@ err2 = norm(result2 - ref_dist, Inf)
 
 println(io0(), "Scalar multiplication errors: $err1, $err2")
 
-MPI.Finalize()
 ```
 
 ## Computing Norms
@@ -312,7 +305,6 @@ println(io0(), "3-norm: $p_norm")
 println(io0(), "Operator 1-norm: $op_1")
 println(io0(), "Operator Inf-norm: $op_inf")
 
-MPI.Finalize()
 ```
 
 ## Iterative Methods Example
@@ -349,7 +341,6 @@ norm_A2 = norm(A2dist)
 println(io0(), "||A^2||_F = $norm_A2")
 # For SPD matrices, this relates to the eigenvalues
 
-MPI.Finalize()
 ```
 
 ## Solving Linear Systems
@@ -394,7 +385,6 @@ residual = norm(A * x_full - ones(n), Inf)
 
 println(io0(), "LDLT solve residual: $residual")
 
-MPI.Finalize()
 ```
 
 ### LU Factorization (General Matrices)
@@ -428,7 +418,6 @@ residual = norm(A * x_full - ones(n), Inf)
 
 println(io0(), "LU solve residual: $residual")
 
-MPI.Finalize()
 ```
 
 ### Symmetric Indefinite Matrices
@@ -462,7 +451,6 @@ residual = norm(A * x_full - collect(1.0:n), Inf)
 
 println(io0(), "Indefinite LDLT residual: $residual")
 
-MPI.Finalize()
 ```
 
 ### Reusing Symbolic Factorization
@@ -507,7 +495,6 @@ x2_full = Vector(x2)
 println(io0(), "F1 residual: ", norm(A1 * x1_full - ones(n), Inf))
 println(io0(), "F2 residual: ", norm(A2 * x2_full - ones(n), Inf))
 
-MPI.Finalize()
 ```
 
 ## Plan Caching and Management
@@ -544,7 +531,6 @@ clear_plan_cache!()  # Clears all caches including factorization
 
 println(io0(), "Cached multiplication completed")
 
-MPI.Finalize()
 ```
 
 ## Dense Matrix Operations with mapslices
@@ -575,7 +561,6 @@ row_stats = mapslices(x -> [norm(x), maximum(x), sum(x)], Adist; dims=2)
 
 println(io0(), "Row statistics shape: $(size(row_stats))")  # (100, 3)
 
-MPI.Finalize()
 ```
 
 ### Column-wise Operations (dims=1)
@@ -601,7 +586,6 @@ col_stats = mapslices(x -> [norm(x), maximum(x)], Adist; dims=1)
 
 println(io0(), "Column statistics shape: $(size(col_stats))")  # (2, 10)
 
-MPI.Finalize()
 ```
 
 ### Use Case: Replacing vcat(f.(eachrow(A))...)
@@ -631,5 +615,4 @@ Bdist = mapslices(g, Adist; dims=2)
 
 println(io0(), "Result: $(size(Bdist))")  # (100, 2)
 
-MPI.Finalize()
 ```

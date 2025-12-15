@@ -15,7 +15,6 @@ You can verify your MPI setup with:
 using MPI
 MPI.Init()
 println("Rank $(MPI.Comm_rank(MPI.COMM_WORLD)) of $(MPI.Comm_size(MPI.COMM_WORLD))")
-MPI.Finalize()
 ```
 
 Run with:
@@ -207,8 +206,6 @@ Cdist = Adist * Bdist
 result_norm = norm(Cdist)
 
 println(io0(), "Result norm: $result_norm")
-
-MPI.Finalize()
 ```
 
 ## Performance Tips
