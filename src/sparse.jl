@@ -12,10 +12,17 @@ Compute a structural hash that is identical across all ranks.
 function compute_structural_hash(row_partition::Vector{Int}, col_indices::Vector{Int},
     AT::SparseMatrixCSC, comm::MPI.Comm)::Blake3Hash
     # Step 1: Compute rank-local hash
+    # IMPORTANT: Prefix each vector with its length to disambiguate boundaries.
+    # Without length prefixes, different structures could hash to the same value
+    # if the concatenated bytes happen to match.
     ctx = Blake3Ctx()
+    update!(ctx, reinterpret(UInt8, Int[length(row_partition)]))
     update!(ctx, reinterpret(UInt8, row_partition))
+    update!(ctx, reinterpret(UInt8, Int[length(col_indices)]))
     update!(ctx, reinterpret(UInt8, col_indices))
+    update!(ctx, reinterpret(UInt8, Int[length(AT.colptr)]))
     update!(ctx, reinterpret(UInt8, AT.colptr))
+    update!(ctx, reinterpret(UInt8, Int[length(AT.rowval)]))
     update!(ctx, reinterpret(UInt8, AT.rowval))
     local_hash = digest(ctx)
 
@@ -810,33 +817,26 @@ function Base.:*(A::SparseMatrixMPI{T}, B::SparseMatrixMPI{T}) where T
     # result is (ncols_B, local_nrows_A) = shape of C.AT
     result_AT = plan.AT ⊛ A.A.parent
 
-    # Check if hash is already cached in the plan (computed on first execution)
-    if plan.product_structural_hash === nothing
-        # First execution: compute col_indices, compress_map, hash, and cache them
-        result_col_indices = isempty(result_AT.rowval) ? Int[] : unique(sort(result_AT.rowval))
+    # Always compute col_indices and hash from the actual result structure.
+    # NOTE: We cannot cache product_structural_hash because two multiplications with
+    # the same INPUT structural hashes can produce results with DIFFERENT structures.
+    # This happens when the input matrices have the same compressed local structure
+    # but different global positions of nonzeros.
+    result_col_indices = isempty(result_AT.rowval) ? Int[] : unique(sort(result_AT.rowval))
 
-        # Build compress_map: compress_map[global_col] = local_col
-        if isempty(result_col_indices)
-            compress_map = Int[]
-        else
-            max_col = maximum(result_col_indices)
-            compress_map = zeros(Int, max_col)
-            for (local_idx, global_idx) in enumerate(result_col_indices)
-                compress_map[global_idx] = local_idx
-            end
-        end
-
-        compressed_result_AT = compress_AT_cached(result_AT, compress_map, length(result_col_indices))
-        plan.product_structural_hash = compute_structural_hash(A.row_partition, result_col_indices, compressed_result_AT, comm)
-        plan.product_col_indices = result_col_indices
-        plan.product_row_partition = A.row_partition
-        plan.product_compress_map = compress_map
+    # Build compress_map: compress_map[global_col] = local_col
+    if isempty(result_col_indices)
+        compress_map = Int[]
     else
-        # Subsequent executions: use cached col_indices and compress_map (skip unique/sort and Dict creation)
-        result_col_indices = plan.product_col_indices
-        compressed_result_AT = compress_AT_cached(result_AT, plan.product_compress_map, length(result_col_indices))
+        max_col = maximum(result_col_indices)
+        compress_map = zeros(Int, max_col)
+        for (local_idx, global_idx) in enumerate(result_col_indices)
+            compress_map[global_idx] = local_idx
+        end
     end
-    result_hash = plan.product_structural_hash
+
+    compressed_result_AT = compress_AT_cached(result_AT, compress_map, length(result_col_indices))
+    result_hash = compute_structural_hash(A.row_partition, result_col_indices, compressed_result_AT, comm)
 
     # C = A * B has rows from A and columns from B
     return SparseMatrixMPI{T}(result_hash, A.row_partition, B.col_partition, result_col_indices, transpose(compressed_result_AT),
@@ -922,30 +922,40 @@ function Base.:+(A::SparseMatrixMPI{T}, B::SparseMatrixMPI{T}) where T
         # Compress result
         compressed_result = compress_AT(result_union, result_col_indices_local)
 
-        # Compute and cache everything
-        plan.addition_structural_hash = compute_structural_hash(A.row_partition, result_col_indices, compressed_result, comm)
-        plan.addition_col_indices = result_col_indices
+        # Compute hash from actual result
+        result_hash = compute_structural_hash(A.row_partition, result_col_indices, compressed_result, comm)
+
+        # Cache only the INPUT-DEPENDENT mappings (these depend on A and B structure, not values)
+        # NOTE: We do NOT cache result_col_indices, result_col_indices_local, or result hash
+        # because those depend on numerical VALUES and can differ even with same input structure
         plan.addition_union_indices = union_indices
         plan.addition_A_col_to_union = A_col_to_union
         plan.addition_plan_global_to_union = plan_global_to_union
-        plan.addition_result_col_indices_local = result_col_indices_local
     else
-        # Subsequent executions: use cached mappings
+        # Subsequent executions: use cached INPUT-DEPENDENT mappings
         union_indices = plan.addition_union_indices
         union_size = length(union_indices)
-        result_col_indices = plan.addition_col_indices
-        result_col_indices_local = plan.addition_result_col_indices_local
 
-        # Use cached mappings for reindexing
+        # Use cached mappings for reindexing (these are INPUT-DEPENDENT, safe to cache)
         A_union = reindex_to_union_cached(A.A.parent, plan.addition_A_col_to_union, union_size)
         plan_union = reindex_global_to_union_cached(plan.AT, plan.addition_plan_global_to_union, union_size)
+
+        # Add in union space
         result_union = A_union + plan_union
 
-        # Compress using cached local indices
+        # NOTE: We must compute result structure FRESH because numerical values can differ
+        # and produce different sparsity patterns (e.g., due to cancellation)
+        result_col_indices_local = isempty(result_union.rowval) ? Int[] : unique(sort(result_union.rowval))
+        result_col_indices = isempty(result_col_indices_local) ? Int[] : union_indices[result_col_indices_local]
+
+        # Compress result
         compressed_result = compress_AT(result_union, result_col_indices_local)
+
+        # Compute hash from actual result structure
+        result_hash = compute_structural_hash(A.row_partition, result_col_indices, compressed_result, comm)
     end
 
-    return SparseMatrixMPI{T}(plan.addition_structural_hash, A.row_partition, A.col_partition,
+    return SparseMatrixMPI{T}(result_hash, A.row_partition, A.col_partition,
         result_col_indices, transpose(compressed_result), nothing)
 end
 
@@ -961,7 +971,7 @@ function Base.:-(A::SparseMatrixMPI{T}, B::SparseMatrixMPI{T}) where T
     plan = get_addition_plan(A, B)
     execute_plan!(plan, B)
 
-    # Check if mappings are already cached in the plan (same structure as addition)
+    # Check if mappings are already cached in the plan
     if plan.addition_A_col_to_union === nothing
         # First execution: compute everything and cache
 
@@ -999,30 +1009,37 @@ function Base.:-(A::SparseMatrixMPI{T}, B::SparseMatrixMPI{T}) where T
         # Compress result
         compressed_result = compress_AT(result_union, result_col_indices_local)
 
-        # Compute and cache everything (same structure as addition)
-        plan.addition_structural_hash = compute_structural_hash(A.row_partition, result_col_indices, compressed_result, comm)
-        plan.addition_col_indices = result_col_indices
+        # Compute hash from actual result
+        result_hash = compute_structural_hash(A.row_partition, result_col_indices, compressed_result, comm)
+
+        # Cache only the INPUT-DEPENDENT mappings (same as addition)
         plan.addition_union_indices = union_indices
         plan.addition_A_col_to_union = A_col_to_union
         plan.addition_plan_global_to_union = plan_global_to_union
-        plan.addition_result_col_indices_local = result_col_indices_local
     else
-        # Subsequent executions: use cached mappings
+        # Subsequent executions: use cached INPUT-DEPENDENT mappings
         union_indices = plan.addition_union_indices
         union_size = length(union_indices)
-        result_col_indices = plan.addition_col_indices
-        result_col_indices_local = plan.addition_result_col_indices_local
 
         # Use cached mappings for reindexing
         A_union = reindex_to_union_cached(A.A.parent, plan.addition_A_col_to_union, union_size)
         plan_union = reindex_global_to_union_cached(plan.AT, plan.addition_plan_global_to_union, union_size)
+
+        # Subtract in union space
         result_union = A_union - plan_union
 
-        # Compress using cached local indices
+        # Compute result structure FRESH (same reasoning as addition)
+        result_col_indices_local = isempty(result_union.rowval) ? Int[] : unique(sort(result_union.rowval))
+        result_col_indices = isempty(result_col_indices_local) ? Int[] : union_indices[result_col_indices_local]
+
+        # Compress result
         compressed_result = compress_AT(result_union, result_col_indices_local)
+
+        # Compute hash from actual result structure
+        result_hash = compute_structural_hash(A.row_partition, result_col_indices, compressed_result, comm)
     end
 
-    return SparseMatrixMPI{T}(plan.addition_structural_hash, A.row_partition, A.col_partition,
+    return SparseMatrixMPI{T}(result_hash, A.row_partition, A.col_partition,
         result_col_indices, transpose(compressed_result), nothing)
 end
 
@@ -1222,7 +1239,9 @@ function TransposePlan(A::SparseMatrixMPI{T}) where T
     result_AT = SparseMatrixCSC(result_AT_nrows, local_ncols, colptr, rowval, nzval)
 
     # Step 6: Build communication plan for values
-    recv_perm = [Int[] for _ in recv_rank_ids]
+    # Pre-allocate recv_perm with correct sizes - use indexed assignment not push!
+    # because entries are sorted but recv_bufs come in original send order
+    recv_perm = [Vector{Int}(undef, recv_counts[r+1]) for r in recv_rank_ids]
     local_src_indices = Int[]
     local_dst_indices = Int[]
 
@@ -1234,7 +1253,8 @@ function TransposePlan(A::SparseMatrixMPI{T}) where T
             push!(local_src_indices, local_entries_src[src_idx])
             push!(local_dst_indices, dst_idx)
         else
-            push!(recv_perm[recv_rank_to_idx[src_rank]], dst_idx)
+            # Use indexed assignment: src_idx is the position in recv_buf from src_rank
+            recv_perm[recv_rank_to_idx[src_rank]][src_idx] = dst_idx
         end
     end
 
@@ -1723,6 +1743,13 @@ Matrix times scalar.
 """
 Base.:*(A::SparseMatrixMPI{T}, a::Number) where T = a * A
 
+"""
+    -(A::SparseMatrixMPI{T}) where T
+
+Unary negation of a sparse matrix.
+"""
+Base.:-(A::SparseMatrixMPI{T}) where T = (-1) * A
+
 # Type alias for transpose of SparseMatrixMPI
 const TransposedSparseMatrixMPI{T} = Transpose{T,SparseMatrixMPI{T}}
 
@@ -1774,6 +1801,67 @@ function Base.:*(A::SparseMatrixMPI{T}, Bt::TransposedSparseMatrixMPI{T}) where 
     B = Bt.parent
     B_transposed = materialize_transpose(B)
     return A * B_transposed
+end
+
+"""
+    Base.:*(At::TransposedSparseMatrixMPI{T}, x::VectorMPI{T}) where T
+
+Compute transpose(A) * x by materializing the transpose of A first.
+"""
+function Base.:*(At::TransposedSparseMatrixMPI{T}, x::VectorMPI{T}) where T
+    A = At.parent
+    A_transposed = materialize_transpose(A)
+    return A_transposed * x
+end
+
+# ============================================================================
+# Mixed Sparse-Dense Operations
+# ============================================================================
+
+"""
+    Base.:*(A::SparseMatrixMPI{T}, B::MatrixMPI{T}) where T
+
+Compute sparse matrix times dense matrix by column-by-column multiplication.
+Returns a MatrixMPI with the same row partition as A.
+"""
+function Base.:*(A::SparseMatrixMPI{T}, B::MatrixMPI{T}) where T
+    m = size(A, 1)
+    n = size(B, 2)
+
+    comm = MPI.COMM_WORLD
+    rank = MPI.Comm_rank(comm)
+
+    # Multiply column by column using existing sparse * vector
+    columns = Vector{VectorMPI{T}}(undef, n)
+    for k in 1:n
+        # Extract k-th column of B as VectorMPI
+        b_col = B[:, k]
+        # Multiply sparse * vector
+        columns[k] = A * b_col
+    end
+
+    # Get partition from first column result
+    result_partition = columns[1].partition
+    local_m = result_partition[rank+2] - result_partition[rank+1]
+
+    # Build local matrix from column results
+    local_result = Matrix{T}(undef, local_m, n)
+    for k in 1:n
+        local_result[:, k] = columns[k].v
+    end
+
+    return MatrixMPI_local(local_result)
+end
+
+"""
+    Base.:*(At::TransposedSparseMatrixMPI{T}, B::MatrixMPI{T}) where T
+
+Compute transpose(A) * B by materializing the transpose of A first.
+"""
+function Base.:*(At::TransposedSparseMatrixMPI{T}, B::MatrixMPI{T}) where T
+    A = At.parent
+    A_transposed = materialize_transpose(A)
+    return A_transposed * B
 end
 
 # ============================================================================
@@ -2780,4 +2868,193 @@ A = spdiagm(4, 4, v)  # 4×4 matrix with [1,2,0,0] on main diagonal
 """
 function spdiagm(m::Integer, n::Integer, v::VectorMPI)
     return spdiagm(m, n, 0 => v)
+end
+
+# ============================================================================
+# Mixed Dense-Sparse Operations (Dense on left side)
+# ============================================================================
+
+"""
+    Base.:*(A::MatrixMPI{T}, B::SparseMatrixMPI{T}) where T
+
+Compute dense matrix times sparse matrix.
+Uses column-by-column approach with transpose(B)' * transpose(A').
+"""
+function Base.:*(A::MatrixMPI{T}, B::SparseMatrixMPI{T}) where T
+    m = size(A, 1)
+    n = size(B, 2)
+
+    comm = MPI.COMM_WORLD
+    rank = MPI.Comm_rank(comm)
+
+    # Multiply row by row: result[i, :] = A[i, :] * B
+    # Transpose approach: transpose(B) * transpose(A) gives transpose(A * B)
+    # We compute column-by-column of the result instead
+
+    columns = Vector{VectorMPI{T}}(undef, n)
+    B_t = materialize_transpose(B)
+
+    for k in 1:n
+        # Column k of result = A * (column k of B) = A * B_t'[:, k]
+        b_col = B[:, k]
+        columns[k] = A * b_col
+    end
+
+    # Get partition from first column result
+    result_partition = columns[1].partition
+    local_m = result_partition[rank+2] - result_partition[rank+1]
+
+    # Build local matrix from column results
+    local_result = Matrix{T}(undef, local_m, n)
+    for k in 1:n
+        local_result[:, k] = columns[k].v
+    end
+
+    return MatrixMPI_local(local_result)
+end
+
+"""
+    Base.:*(At::TransposedMatrixMPI{T}, B::SparseMatrixMPI{T}) where T
+
+Compute transpose(A) * B where A is dense and B is sparse.
+"""
+function Base.:*(At::TransposedMatrixMPI{T}, B::SparseMatrixMPI{T}) where T
+    A = At.parent
+    n = size(B, 2)
+
+    comm = MPI.COMM_WORLD
+    rank = MPI.Comm_rank(comm)
+
+    # Multiply column by column
+    columns = Vector{VectorMPI{T}}(undef, n)
+    for k in 1:n
+        b_col = B[:, k]
+        columns[k] = transpose(A) * b_col
+    end
+
+    # Get partition from first column result
+    result_partition = columns[1].partition
+    local_m = result_partition[rank+2] - result_partition[rank+1]
+
+    # Build local matrix from column results
+    local_result = Matrix{T}(undef, local_m, n)
+    for k in 1:n
+        local_result[:, k] = columns[k].v
+    end
+
+    return MatrixMPI_local(local_result)
+end
+
+# ============================================================================
+# UniformScaling Support
+# ============================================================================
+
+"""
+    Base.:+(A::SparseMatrixMPI{T}, J::UniformScaling) where T
+
+Add a scalar multiple of the identity matrix to A.
+Returns A + λI where J = λI.
+
+The matrix must be square for this operation.
+"""
+function Base.:+(A::SparseMatrixMPI{T}, J::UniformScaling) where T
+    m, n = size(A)
+    if m != n
+        throw(DimensionMismatch("matrix must be square to add UniformScaling"))
+    end
+
+    comm = MPI.COMM_WORLD
+    rank = MPI.Comm_rank(comm)
+
+    λ = J.λ
+    RT = promote_type(T, typeof(λ))
+
+    my_row_start = A.row_partition[rank + 1]
+    my_row_end = A.row_partition[rank + 2] - 1
+    local_nrows = my_row_end - my_row_start + 1
+
+    # Gather diagonal elements we need to modify for our local rows
+    # Each local row i corresponds to global row my_row_start + i - 1
+    # The diagonal element for that row is at column my_row_start + i - 1
+
+    # Build COO format for the result
+    local_I = Int[]
+    local_J = Int[]
+    local_V = RT[]
+
+    AT = A.A.parent  # underlying CSC
+    col_indices = A.col_indices
+
+    for local_row in 1:local_nrows
+        global_row = my_row_start + local_row - 1
+        diag_col = global_row  # Diagonal element
+
+        # Iterate over existing entries in this row
+        found_diag = false
+        for nz_idx in AT.colptr[local_row]:(AT.colptr[local_row+1]-1)
+            local_col_idx = AT.rowval[nz_idx]
+            global_col = col_indices[local_col_idx]
+            val = AT.nzval[nz_idx]
+
+            if global_col == diag_col
+                # This is the diagonal - add λ
+                push!(local_I, local_row)
+                push!(local_J, global_col)
+                push!(local_V, RT(val) + RT(λ))
+                found_diag = true
+            else
+                # Non-diagonal - keep as is
+                push!(local_I, local_row)
+                push!(local_J, global_col)
+                push!(local_V, RT(val))
+            end
+        end
+
+        # If diagonal wasn't in the sparsity pattern, add it
+        if !found_diag && diag_col <= n
+            push!(local_I, local_row)
+            push!(local_J, diag_col)
+            push!(local_V, RT(λ))
+        end
+    end
+
+    # Build local sparse matrix
+    if isempty(local_I)
+        AT_local = SparseMatrixCSC(n, local_nrows, ones(Int, local_nrows + 1), Int[], RT[])
+    else
+        local_sparse = sparse(local_I, local_J, local_V, local_nrows, n)
+        AT_local = sparse(transpose(local_sparse))
+    end
+
+    return SparseMatrixMPI_local(transpose(AT_local); comm=comm)
+end
+
+"""
+    Base.:-(A::SparseMatrixMPI{T}, J::UniformScaling) where T
+
+Subtract a scalar multiple of the identity matrix from A.
+Returns A - λI where J = λI.
+"""
+function Base.:-(A::SparseMatrixMPI{T}, J::UniformScaling) where T
+    return A + UniformScaling(-J.λ)
+end
+
+"""
+    Base.:+(J::UniformScaling, A::SparseMatrixMPI{T}) where T
+
+Add a sparse matrix to a scalar multiple of the identity.
+Returns λI + A where J = λI.
+"""
+function Base.:+(J::UniformScaling, A::SparseMatrixMPI{T}) where T
+    return A + J
+end
+
+"""
+    Base.:-(J::UniformScaling, A::SparseMatrixMPI{T}) where T
+
+Subtract a sparse matrix from a scalar multiple of the identity.
+Returns λI - A where J = λI.
+"""
+function Base.:-(J::UniformScaling, A::SparseMatrixMPI{T}) where T
+    return (-A) + J
 end

@@ -474,6 +474,36 @@ function LinearAlgebra.norm(v::VectorMPI{T}, p::Real=2) where T
 end
 
 """
+    LinearAlgebra.dot(x::VectorMPI{T}, y::VectorMPI{T}) where T
+
+Compute the dot product of two distributed vectors.
+
+This is a collective operation. If the vectors have different partitions,
+the second vector is redistributed to match the first vector's partition.
+
+# Example
+```julia
+x = VectorMPI(rand(10))
+y = VectorMPI(rand(10))
+d = dot(x, y)
+```
+"""
+function LinearAlgebra.dot(x::VectorMPI{T}, y::VectorMPI{T}) where T
+    comm = MPI.COMM_WORLD
+
+    # If partitions match, use local dot product directly
+    if x.partition == y.partition
+        local_dot = dot(x.v, y.v)
+        return MPI.Allreduce(local_dot, MPI.SUM, comm)
+    else
+        # Redistribute y to match x's partition using _align_vector
+        y_aligned = _align_vector(y, x.partition)
+        local_dot = dot(x.v, y_aligned.v)
+        return MPI.Allreduce(local_dot, MPI.SUM, comm)
+    end
+end
+
+"""
     Base.maximum(v::VectorMPI{T}) where T
 
 Compute the maximum element of the distributed vector.

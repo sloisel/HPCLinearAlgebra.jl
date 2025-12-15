@@ -12,9 +12,15 @@ Compute a structural hash for a dense matrix that is identical across all ranks.
 function compute_dense_structural_hash(row_partition::Vector{Int}, col_partition::Vector{Int},
     local_size::Tuple{Int,Int}, comm::MPI.Comm)::Blake3Hash
     # Step 1: Compute rank-local hash
+    # IMPORTANT: Prefix each vector with its length to disambiguate boundaries.
+    # Without length prefixes, different structures could hash to the same value
+    # if the concatenated bytes happen to match.
     ctx = Blake3Ctx()
+    update!(ctx, reinterpret(UInt8, Int[length(row_partition)]))
     update!(ctx, reinterpret(UInt8, row_partition))
+    update!(ctx, reinterpret(UInt8, Int[length(col_partition)]))
     update!(ctx, reinterpret(UInt8, col_partition))
+    update!(ctx, reinterpret(UInt8, Int[2]))  # local_size is always 2 elements
     update!(ctx, reinterpret(UInt8, collect(local_size)))
     local_hash = digest(ctx)
 
@@ -1130,6 +1136,43 @@ function Base.:*(vt::Transpose{<:Any, VectorMPI{T}}, A::MatrixMPI{T}) where T
     v = vt.parent
     result = transpose(A) * v
     return transpose(result)
+end
+
+# ============================================================================
+# Dense Matrix-Matrix Multiplication with Transpose
+# ============================================================================
+
+"""
+    Base.:*(At::TransposedMatrixMPI{T}, B::MatrixMPI{T}) where T
+
+Compute transpose(A) * B for dense matrices.
+Uses column-by-column multiplication via transpose(A) * b_col.
+"""
+function Base.:*(At::TransposedMatrixMPI{T}, B::MatrixMPI{T}) where T
+    A = At.parent
+    n = size(B, 2)
+
+    comm = MPI.COMM_WORLD
+    rank = MPI.Comm_rank(comm)
+
+    # Multiply column by column using existing transpose(A) * vector
+    columns = Vector{VectorMPI{T}}(undef, n)
+    for k in 1:n
+        b_col = B[:, k]
+        columns[k] = transpose(A) * b_col
+    end
+
+    # Get partition from first column result
+    result_partition = columns[1].partition
+    local_m = result_partition[rank+2] - result_partition[rank+1]
+
+    # Build local matrix from column results
+    local_result = Matrix{T}(undef, local_m, n)
+    for k in 1:n
+        local_result[:, k] = columns[k].v
+    end
+
+    return MatrixMPI_local(local_result)
 end
 
 # Scalar multiplication for MatrixMPI

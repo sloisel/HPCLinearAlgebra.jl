@@ -6,7 +6,7 @@ using SparseArrays
 using MUMPS
 import SparseArrays: nnz, issparse, dropzeros, spdiagm, blockdiag
 import LinearAlgebra
-import LinearAlgebra: tr, diag, triu, tril, Transpose, Adjoint, norm, opnorm, mul!, ldlt, BLAS, issymmetric
+import LinearAlgebra: tr, diag, triu, tril, Transpose, Adjoint, norm, opnorm, mul!, ldlt, BLAS, issymmetric, UniformScaling, dot
 
 export SparseMatrixMPI, MatrixMPI, VectorMPI, clear_plan_cache!, uniform_partition
 export ⊛  # Multithreaded sparse matrix multiplication

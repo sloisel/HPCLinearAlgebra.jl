@@ -703,6 +703,30 @@ function Base.getindex(A::MatrixMPI{T}, ::Colon, ::Colon) where T
 end
 
 """
+    Base.getindex(A::MatrixMPI{T}, ::Colon, k::Integer) where T
+
+Extract column k from a distributed dense matrix as a VectorMPI.
+
+This is a collective operation - all ranks must call it.
+Each rank extracts its local portion of the column.
+
+# Example
+```julia
+A = MatrixMPI(reshape(1.0:12.0, 4, 3))
+v = A[:, 2]  # Get second column as VectorMPI
+```
+"""
+function Base.getindex(A::MatrixMPI{T}, ::Colon, k::Integer) where T
+    m, n = size(A)
+    if k < 1 || k > n
+        error("MatrixMPI column index out of bounds: k=$k, ncols=$n")
+    end
+    # Extract local portion of column k
+    local_col = A.A[:, k]
+    return VectorMPI_local(local_col)
+end
+
+"""
     Base.setindex!(A::MatrixMPI{T}, val, row_rng::UnitRange{Int}, col_rng::UnitRange{Int}) where T
 
 Set elements `A[row_rng, col_rng] = val` in a distributed dense matrix.
@@ -1150,6 +1174,60 @@ end
 # Convenience: A[:, :] - full copy
 function Base.getindex(A::SparseMatrixMPI{T}, ::Colon, ::Colon) where T
     return A[1:size(A, 1), 1:size(A, 2)]
+end
+
+"""
+    Base.getindex(A::SparseMatrixMPI{T}, ::Colon, k::Integer) where T
+
+Extract column k from a distributed sparse matrix as a VectorMPI.
+
+This is a collective operation - all ranks must call it.
+Each rank extracts its local portion of the column.
+
+# Example
+```julia
+A = SparseMatrixMPI{Float64}(sprand(10, 5, 0.3))
+v = A[:, 2]  # Get second column as VectorMPI
+```
+"""
+function Base.getindex(A::SparseMatrixMPI{T}, ::Colon, k::Integer) where T
+    m, n = size(A)
+    if k < 1 || k > n
+        error("SparseMatrixMPI column index out of bounds: k=$k, ncols=$n")
+    end
+
+    comm = MPI.COMM_WORLD
+    rank = MPI.Comm_rank(comm)
+
+    # Get local row range
+    my_row_start = A.row_partition[rank + 1]
+    my_row_end = A.row_partition[rank + 2] - 1
+    local_nrows = my_row_end - my_row_start + 1
+
+    # Check if column k is in our col_indices
+    local_col_idx = searchsortedfirst(A.col_indices, k)
+    has_col = local_col_idx <= length(A.col_indices) && A.col_indices[local_col_idx] == k
+
+    # Build local portion of column
+    local_col = zeros(T, local_nrows)
+
+    if has_col && local_nrows > 0
+        # A.A.parent is CSC with shape (length(col_indices), local_nrows)
+        # Row indices in A.A.parent.rowval are local column indices
+        # Column indices in A.A.parent are local row indices
+        parent = A.A.parent
+        for local_row in 1:local_nrows
+            # Iterate over nonzeros in this row (stored as column in parent)
+            for idx in parent.colptr[local_row]:(parent.colptr[local_row+1]-1)
+                if parent.rowval[idx] == local_col_idx
+                    local_col[local_row] = parent.nzval[idx]
+                    break
+                end
+            end
+        end
+    end
+
+    return VectorMPI_local(local_col)
 end
 
 """
