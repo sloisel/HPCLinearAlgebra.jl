@@ -1,0 +1,15 @@
+# LinearAlgebraMPI.jl vs SafePETSc.jl Benchmark Results
+# Date: 2025-12-14T15:12:14.344
+# MPI ranks: 4
+# Julia threads: 3
+# Problem size: 10000 x 10000, nnz=49600
+#
+# Matrix-Matrix Multiplication (A * A)
+# library,matmat_time
+SafePETSc,0.0008169999999836364
+LinearAlgebraMPI,0.0012159999999994398
+#
+# Sparse Direct Solve (LDLT)
+# library,factorization_time,solve_time,total_time
+SafePETSc,0.048731999999972686,0.015060999999946034,0.06379299999991872
+LinearAlgebraMPI,0.017274999999926877,0.005936000000019703,0.02321099999994658

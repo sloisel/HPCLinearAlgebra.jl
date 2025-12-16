@@ -63,7 +63,7 @@ A_sym = A + transpose(A) + 10I  # Make symmetric positive definite
 A_sym_dist = SparseMatrixMPI{Float64}(A_sym)
 F = ldlt(A_sym_dist)  # LDLT factorization
 x_sol = solve(F, y)   # Solve A_sym * x_sol = y
-# F is automatically cleaned up when garbage collected
+finalize!(F)          # Release factorization resources
 ```
 
 ## Running with MPI

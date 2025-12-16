@@ -1,0 +1,8 @@
+# Factorization Benchmark Results
+# Date: 2025-12-14 12:18:08
+# MPI ranks: 4
+# Julia threads: 2
+# BLAS threads: 2
+#
+# n,lu_time,ldlt_time
+10000,0.3294540000000552,0.3827730000000429

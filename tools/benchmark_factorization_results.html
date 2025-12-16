@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Factorization Benchmark</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1000px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 { color: #333; border-bottom: 2px solid #4a90d9; padding-bottom: 10px; }
+        h2 { color: #555; margin-top: 30px; }
+        .info {
+            background: #e8f4fd;
+            border-left: 4px solid #4a90d9;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            background: white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin: 20px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px 15px;
+            text-align: right;
+        }
+        th { background: #4a90d9; color: white; font-weight: 600; }
+        tr:nth-child(even) { background: #f9f9f9; }
+        tr:hover { background: #f0f7ff; }
+        td:first-child, th:first-child { text-align: left; font-weight: 600; }
+        .time { font-family: 'Monaco', 'Menlo', monospace; font-size: 0.9em; }
+        .footnote {
+            font-size: 0.85em;
+            color: #666;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+        }
+    </style>
+</head>
+<body>
+    <h1>Factorization Benchmark</h1>
+    <h2>LU and LDLT Performance</h2>
+
+    <div class="info">
+        <strong>Test Configuration:</strong><br>
+        Matrix type: 2D Laplacian (5-point stencil)<br>
+        MPI ranks: 4<br>
+        Julia threads: 2<br>
+        BLAS threads: 2<br>
+        Date: 2025-12-14 12:18:08
+    </div>
+
+    <h2>Results</h2>
+    <table>
+        <tr>
+            <th>Matrix Size</th>
+            <th>nnz</th>
+            <th>LU Time</th>
+            <th>LDLT Time</th>
+        </tr>
+        <tr>
+            <td>10000 × 10000</td>
+            <td>49.6K</td>
+            <td class="time">329.45 ms</td>
+            <td class="time">382.77 ms</td>
+        </tr>
+    </table>
+
+    <div class="footnote">
+        <strong>Notes:</strong>
+        <ul>
+            <li>Times are median of multiple runs</li>
+            <li>All MPI ranks participate in factorization</li>
+            <li>BLAS operations use multithreading internally</li>
+        </ul>
+    </div>
+</body>
+</html>
