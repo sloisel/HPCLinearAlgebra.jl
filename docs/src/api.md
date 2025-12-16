@@ -428,6 +428,12 @@ solve
 solve!
 ```
 
+### Resource Management
+
+```@docs
+finalize!
+```
+
 ### Usage Examples
 
 ```julia
