@@ -696,9 +696,15 @@ using PrecompileTools
     I_sparse = sparse(1.0 * LinearAlgebra.I, n, n)
 
     @compile_workload begin
-        # Initialize MPI (works in single-process mode during precompilation)
-        MPI.Init()
+        # Try to initialize MPI - may fail during precompilation under mpiexec
+        mpi_ok = try
+            MPI.Init()
+            true
+        catch
+            false
+        end
 
+        if mpi_ok
         # === VectorMPI operations (Float64) ===
         v = VectorMPI(v_f64)
         w = VectorMPI(2.0 .* v_f64)
@@ -781,6 +787,7 @@ using PrecompileTools
 
         # Clear caches
         clear_plan_cache!()
+        end  # if mpi_ok
     end
 end
 
