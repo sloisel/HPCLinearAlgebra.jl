@@ -234,6 +234,41 @@ A = MatrixMPI(A_global)
 B = mapslices(x -> [norm(x), maximum(x), sum(x)], A; dims=2)
 ```
 
+### map_rows
+
+```@docs
+map_rows
+```
+
+Apply a function to corresponding rows of multiple distributed vectors/matrices. This is the MPI-distributed version of `vcat((f.((eachrow.(A))...))...)`.
+
+**Result type follows vcat semantics:**
+
+| `f` returns | Result |
+|-------------|--------|
+| scalar | `VectorMPI` (one element per row) |
+| column vector `[1,2,3]` | `VectorMPI` (concatenated) |
+| row vector `[1,2,3]'` or `transpose([1,2,3])` | `MatrixMPI` (stacked rows) |
+| matrix `[1 2 3]` | `MatrixMPI` (stacked rows) |
+
+**Examples:**
+```julia
+# Row norms
+A = MatrixMPI(randn(100, 10))
+norms = map_rows(r -> norm(r), A)  # VectorMPI of length 100
+
+# Expand rows to vectors (vcat behavior)
+result = map_rows(r -> [1, 2, 3], A)  # VectorMPI of length 300
+
+# Build matrix from row vectors
+result = map_rows(r -> [1, 2, 3]', A)  # 100×3 MatrixMPI
+
+# Multiple inputs with automatic partition alignment
+A = MatrixMPI(randn(100, 10))
+w = VectorMPI(randn(100))
+weighted = map_rows((row, wi) -> sum(row) * wi[1], A, w)
+```
+
 ### Block Operations
 
 ```julia

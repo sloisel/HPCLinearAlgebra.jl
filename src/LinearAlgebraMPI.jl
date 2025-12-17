@@ -10,6 +10,7 @@ import LinearAlgebra: tr, diag, triu, tril, Transpose, Adjoint, norm, opnorm, mu
 
 export SparseMatrixMPI, MatrixMPI, VectorMPI, clear_plan_cache!, uniform_partition, repartition
 export SparseMatrixCSR  # Type alias for Transpose{SparseMatrixCSC} (CSR storage format)
+export map_rows  # Row-wise map over distributed vectors/matrices
 export ⊛  # Multithreaded sparse matrix multiplication
 export VectorMPI_local, MatrixMPI_local, SparseMatrixMPI_local  # Local constructors
 export mean  # Our mean function for SparseMatrixMPI and VectorMPI
@@ -736,6 +737,244 @@ function Base.show(io::IO, ::MIME"text/plain", A::SparseMatrixMPI{T}) where T
     m, n = size(A)
     println(io, "$m×$n SparseMatrixMPI{$T} with $(nnz(full_A)) stored entries:")
     show(io, MIME("text/plain"), full_A)
+end
+
+# ============================================================================
+# map_rows: Row-wise map over distributed vectors/matrices
+# ============================================================================
+
+"""
+    _get_row_partition(A::VectorMPI) -> Vector{Int}
+    _get_row_partition(A::MatrixMPI) -> Vector{Int}
+
+Get the row partition from a distributed type.
+"""
+_get_row_partition(A::VectorMPI) = A.partition
+_get_row_partition(A::MatrixMPI) = A.row_partition
+
+"""
+    _local_rows(A::VectorMPI)
+    _local_rows(A::MatrixMPI)
+
+Get an iterator over local rows of a distributed type.
+For VectorMPI, each "row" is a single element (wrapped as a view).
+For MatrixMPI, each row is a row vector.
+"""
+_local_rows(A::VectorMPI) = (view(A.v, i:i) for i in 1:length(A.v))
+_local_rows(A::MatrixMPI) = eachrow(A.A)
+
+"""
+    _align_to_partition(A::VectorMPI{T}, p::Vector{Int}) where T
+    _align_to_partition(A::MatrixMPI{T}, p::Vector{Int}) where T
+
+Repartition a distributed type to match partition p.
+"""
+_align_to_partition(A::VectorMPI, p::Vector{Int}) = repartition(A, p)
+_align_to_partition(A::MatrixMPI, p::Vector{Int}) = repartition(A, p)
+
+"""
+    map_rows(f, A...)
+
+Apply function `f` to corresponding rows of distributed vectors/matrices.
+
+Each argument in `A...` must be either a `VectorMPI` or `MatrixMPI`. All inputs
+are repartitioned to match the partition of the first argument before applying `f`.
+
+For each row index i, `f` is called with the i-th row from each input:
+- For `VectorMPI`, the i-th "row" is a length-1 view of element i
+- For `MatrixMPI`, the i-th row is a row vector (a view into the local matrix)
+
+## Result Type (vcat semantics)
+
+The result type depends on what `f` returns, matching the behavior of `vcat`:
+
+| `f` returns | Julia type | Result |
+|-------------|------------|--------|
+| scalar | `Number` | `VectorMPI` (one element per input row) |
+| column vector | `AbstractVector` | `VectorMPI` (vcat concatenates all vectors) |
+| row vector | `Transpose`, `Adjoint` | `MatrixMPI` (vcat stacks as rows) |
+| matrix | `AbstractMatrix` | `MatrixMPI` (vcat stacks rows) |
+
+## Lazy Wrappers
+
+Julia's `transpose(v)` and `v'` (adjoint) return lazy wrappers that are subtypes
+of `AbstractMatrix`, so they produce `MatrixMPI` results:
+
+```julia
+map_rows(r -> [1,2,3], A)           # Vector → VectorMPI (length 3n)
+map_rows(r -> [1,2,3]', A)          # Adjoint → MatrixMPI (n×3)
+map_rows(r -> transpose([1,2,3]), A) # Transpose → MatrixMPI (n×3)
+map_rows(r -> conj([1,2,3]), A)     # Vector → VectorMPI (length 3n)
+map_rows(r -> [1 2 3], A)           # Matrix literal → MatrixMPI (n×3)
+```
+
+## Examples
+
+```julia
+# Element-wise product of two vectors
+u = VectorMPI([1.0, 2.0, 3.0])
+v = VectorMPI([4.0, 5.0, 6.0])
+w = map_rows((a, b) -> a[1] * b[1], u, v)  # VectorMPI([4.0, 10.0, 18.0])
+
+# Row norms of a matrix
+A = MatrixMPI(randn(5, 3))
+norms = map_rows(r -> norm(r), A)  # VectorMPI of row norms
+
+# Expand each row to multiple elements (vcat behavior)
+A = MatrixMPI(randn(3, 2))
+result = map_rows(r -> [1, 2, 3], A)  # VectorMPI of length 9
+
+# Return row vectors to build a matrix
+A = MatrixMPI(randn(3, 2))
+result = map_rows(r -> [1, 2, 3]', A)  # 3×3 MatrixMPI
+
+# Variable-length output per row
+v = VectorMPI([1.0, 2.0, 3.0])
+result = map_rows(r -> ones(Int(r[1])), v)  # VectorMPI of length 6 (1+2+3)
+
+# Mixed inputs: matrix rows weighted by vector elements
+A = MatrixMPI(randn(4, 3))
+w = VectorMPI([1.0, 2.0, 3.0, 4.0])
+result = map_rows((row, wi) -> sum(row) * wi[1], A, w)  # VectorMPI
+```
+
+This is the MPI-distributed version of:
+```julia
+map_rows(f, A...) = vcat((f.((eachrow.(A))...))...)
+```
+"""
+function map_rows(f, A...)
+    isempty(A) && error("map_rows requires at least one argument")
+
+    comm = MPI.COMM_WORLD
+    rank = MPI.Comm_rank(comm)
+    nranks = MPI.Comm_size(comm)
+
+    # Get target partition from first argument
+    target_partition = _get_row_partition(A[1])
+
+    # Align all arguments to target partition
+    aligned = map(a -> _align_to_partition(a, target_partition), A)
+
+    # Get iterators over local rows
+    row_iters = map(_local_rows, aligned)
+
+    # Apply f to corresponding rows
+    # Use zip to iterate over corresponding rows from all inputs
+    results = [f(rows...) for rows in zip(row_iters...)]
+
+    # Determine result type based on what f returned (matching vcat semantics)
+    # Need to handle empty results case by communicating type info across ranks
+
+    # Encode local result info: (has_results, result_kind, eltype_code, ncols_if_matrix)
+    # result_kind: 0=unknown, 1=Number, 2=AbstractVector, 3=AbstractMatrix
+    # eltype_code: 1=Float64, 2=ComplexF64, 3=Int64, 4=other
+    local_info = if isempty(results)
+        Int32[0, 0, 0, 0]  # no results
+    else
+        first_result = results[1]
+        kind = if first_result isa Number
+            Int32(1)
+        elseif first_result isa AbstractVector
+            Int32(2)
+        elseif first_result isa AbstractMatrix
+            Int32(3)
+        else
+            Int32(0)
+        end
+        T = first_result isa Number ? typeof(first_result) : eltype(first_result)
+        eltype_code = if T == Float64
+            Int32(1)
+        elseif T == ComplexF64
+            Int32(2)
+        elseif T <: Integer
+            Int32(3)
+        else
+            Int32(4)
+        end
+        ncols = first_result isa AbstractMatrix ? Int32(size(first_result, 2)) : Int32(0)
+        Int32[1, kind, eltype_code, ncols]
+    end
+
+    # Gather info from all ranks to determine global result type
+    all_info = MPI.Allgather(local_info, comm)
+
+    # Find a rank that has results to determine the type
+    result_kind = Int32(0)
+    eltype_code = Int32(1)
+    ncols = Int32(0)
+    for r in 0:(nranks-1)
+        idx = r * 4
+        if all_info[idx + 1] == 1  # has_results
+            result_kind = all_info[idx + 2]
+            eltype_code = all_info[idx + 3]
+            ncols = all_info[idx + 4]
+            break
+        end
+    end
+
+    # Determine element type
+    T = if eltype_code == 1
+        Float64
+    elseif eltype_code == 2
+        ComplexF64
+    elseif eltype_code == 3
+        Int64
+    else
+        Float64  # fallback
+    end
+
+    # Build result based on kind
+    if result_kind == 1
+        # f returns a scalar -> VectorMPI (one element per row)
+        if isempty(results)
+            return VectorMPI_local(Vector{T}(undef, 0))
+        end
+        local_v = Vector{T}(undef, length(results))
+        for (i, r) in enumerate(results)
+            local_v[i] = r
+        end
+        return VectorMPI_local(local_v)
+
+    elseif result_kind == 2
+        # f returns a column vector -> VectorMPI (vcat concatenates into longer vector)
+        if isempty(results)
+            return VectorMPI_local(Vector{T}(undef, 0))
+        end
+        total_len = sum(length, results)
+        local_v = Vector{T}(undef, total_len)
+        offset = 0
+        for r in results
+            n = length(r)
+            for j in 1:n
+                local_v[offset + j] = r[j]
+            end
+            offset += n
+        end
+        return VectorMPI_local(local_v)
+
+    elseif result_kind == 3
+        # f returns a row vector or matrix -> MatrixMPI (vcat stacks rows)
+        if isempty(results)
+            return MatrixMPI_local(Matrix{T}(undef, 0, ncols))
+        end
+        total_rows = sum(r -> size(r, 1), results)
+        local_A = Matrix{T}(undef, total_rows, ncols)
+        row_offset = 0
+        for r in results
+            nrows = size(r, 1)
+            for i in 1:nrows
+                for j in 1:ncols
+                    local_A[row_offset + i, j] = r[i, j]
+                end
+            end
+            row_offset += nrows
+        end
+        return MatrixMPI_local(local_A)
+
+    else
+        error("map_rows: f must return a Number, AbstractVector, or AbstractMatrix")
+    end
 end
 
 # ============================================================================
