@@ -560,18 +560,21 @@ function LinearAlgebra.norm(v::VectorMPI{T}, p::Real=2) where T
     comm = MPI.COMM_WORLD
 
     if p == 2
-        local_sum = sum(abs2, v.v; init=zero(real(T)))
+        # Use BLAS-optimized local norm, then reduce
+        local_nrm = isempty(v.v) ? zero(real(T)) : norm(v.v)
+        local_sum = local_nrm * local_nrm
         global_sum = MPI.Allreduce(local_sum, MPI.SUM, comm)
         return sqrt(global_sum)
     elseif p == 1
-        local_sum = sum(abs, v.v; init=zero(real(T)))
+        # Use BLAS-optimized local norm(v, 1) = asum
+        local_sum = isempty(v.v) ? zero(real(T)) : norm(v.v, 1)
         return MPI.Allreduce(local_sum, MPI.SUM, comm)
     elseif p == Inf
-        local_max = isempty(v.v) ? zero(real(T)) : maximum(abs, v.v)
+        local_max = isempty(v.v) ? zero(real(T)) : norm(v.v, Inf)
         return MPI.Allreduce(local_max, MPI.MAX, comm)
     else
-        # General p-norm
-        local_sum = sum(x -> abs(x)^p, v.v; init=zero(real(T)))
+        # General p-norm - no BLAS optimization available
+        local_sum = isempty(v.v) ? zero(real(T)) : sum(x -> abs(x)^p, v.v)
         global_sum = MPI.Allreduce(local_sum, MPI.SUM, comm)
         return global_sum^(1 / p)
     end
@@ -636,7 +639,8 @@ Compute the sum of all elements in the distributed vector.
 """
 function Base.sum(v::VectorMPI{T}) where T
     comm = MPI.COMM_WORLD
-    local_sum = sum(v.v; init=zero(T))
+    # Use native sum without init for better performance; handle empty with ternary
+    local_sum = isempty(v.v) ? zero(T) : sum(v.v)
     return MPI.Allreduce(local_sum, MPI.SUM, comm)
 end
 
@@ -647,7 +651,8 @@ Compute the product of all elements in the distributed vector.
 """
 function Base.prod(v::VectorMPI{T}) where T
     comm = MPI.COMM_WORLD
-    local_prod = prod(v.v; init=one(T))
+    # Use native prod without init for better performance; handle empty with ternary
+    local_prod = isempty(v.v) ? one(T) : prod(v.v)
     return MPI.Allreduce(local_prod, MPI.PROD, comm)
 end
 

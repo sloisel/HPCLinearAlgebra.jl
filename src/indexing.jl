@@ -1135,9 +1135,8 @@ function Base.getindex(A::SparseMatrixMPI{T}, row_rng::UnitRange{Int}, col_rng::
         # rowval_list contains positions into new_col_indices
         if !isempty(rowval_list)
             unique_positions = sort(unique(rowval_list))
-            # Map positions to compressed 1-based indices
-            pos_to_compressed = Dict(p => i for (i, p) in enumerate(unique_positions))
-            compressed_rowval = [pos_to_compressed[r] for r in rowval_list]
+            # Map positions to compressed indices: unique_positions is sorted, use binary search
+            compressed_rowval = [searchsortedfirst(unique_positions, r) for r in rowval_list]
             # final_col_indices maps compressed index to global column in result
             # new_col_indices contains the shifted global column indices
             final_col_indices = new_col_indices[unique_positions]
@@ -3594,10 +3593,11 @@ function Base.getindex(A::SparseMatrixMPI{T}, i::Int, col_idx::VectorMPI{Int}) w
         col_indices = A.col_indices
 
         row_data = zeros(T, length(col_indices_result))
-        col_idx_map = Dict(j => c for (c, j) in enumerate(col_indices_result))
+        # col_indices_result is sorted, use binary search instead of Dict
         for (local_j, global_j) in enumerate(col_indices)
-            if haskey(col_idx_map, global_j)
-                row_data[col_idx_map[global_j]] = local_A[local_j, local_row]
+            idx = searchsortedfirst(col_indices_result, global_j)
+            if idx <= length(col_indices_result) && col_indices_result[idx] == global_j
+                row_data[idx] = local_A[local_j, local_row]
             end
         end
     else

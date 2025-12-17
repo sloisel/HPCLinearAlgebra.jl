@@ -1,5 +1,90 @@
 # SparseMatrixMPI type and sparse matrix operations
 
+# ============================================================================
+# Merge-sort style helpers for sorted column index arrays
+# ============================================================================
+
+"""
+    merge_sorted_unique!(result, a, b)
+
+Merge two sorted arrays into a sorted array of unique elements.
+Returns the result array (which may be shorter than allocated).
+"""
+function merge_sorted_unique!(result::Vector{Int}, a::Vector{Int}, b::Vector{Int})
+    i, j, k = 1, 1, 0
+    @inbounds while i <= length(a) && j <= length(b)
+        if a[i] < b[j]
+            k += 1
+            result[k] = a[i]
+            i += 1
+        elseif a[i] > b[j]
+            k += 1
+            result[k] = b[j]
+            j += 1
+        else  # equal
+            k += 1
+            result[k] = a[i]
+            i += 1
+            j += 1
+        end
+    end
+    @inbounds while i <= length(a)
+        k += 1
+        result[k] = a[i]
+        i += 1
+    end
+    @inbounds while j <= length(b)
+        k += 1
+        result[k] = b[j]
+        j += 1
+    end
+    return resize!(result, k)
+end
+
+"""
+    merge_sorted_unique(a, b)
+
+Merge two sorted arrays into a new sorted array of unique elements.
+O(n+m) time, no sorting or Dict needed.
+"""
+function merge_sorted_unique(a::Vector{Int}, b::Vector{Int})
+    result = Vector{Int}(undef, length(a) + length(b))
+    return merge_sorted_unique!(result, a, b)
+end
+
+"""
+    build_subset_mapping!(mapping, subset, superset)
+
+Build a mapping from subset indices to superset positions.
+Both arrays must be sorted, and subset must be a subset of superset.
+mapping[i] = position of subset[i] in superset.
+O(|subset| + |superset|) time with linear scan.
+"""
+function build_subset_mapping!(mapping::Vector{Int}, subset::Vector{Int}, superset::Vector{Int})
+    j = 1  # position in superset
+    @inbounds for i in 1:length(subset)
+        while superset[j] < subset[i]
+            j += 1
+        end
+        # Now superset[j] == subset[i]
+        mapping[i] = j
+    end
+    return mapping
+end
+
+"""
+    build_subset_mapping(subset, superset)
+
+Build a mapping from subset indices to superset positions.
+Returns a new vector where mapping[i] = position of subset[i] in superset.
+"""
+function build_subset_mapping(subset::Vector{Int}, superset::Vector{Int})
+    mapping = Vector{Int}(undef, length(subset))
+    return build_subset_mapping!(mapping, subset, superset)
+end
+
+# ============================================================================
+
 """
     compute_structural_hash(row_partition, col_indices, AT, comm) -> Blake3Hash
 
@@ -47,8 +132,8 @@ function compress_AT(AT::SparseMatrixCSC{T,Int}, col_indices::Vector{Int}) where
     if isempty(col_indices)
         return SparseMatrixCSC(0, AT.n, AT.colptr, Int[], T[])
     end
-    global_to_local = Dict(g => l for (l, g) in enumerate(col_indices))
-    compressed_rowval = [global_to_local[r] for r in AT.rowval]
+    # col_indices is sorted, use binary search instead of Dict
+    compressed_rowval = [searchsortedfirst(col_indices, r) for r in AT.rowval]
     return SparseMatrixCSC(length(col_indices), AT.n, AT.colptr, compressed_rowval, AT.nzval)
 end
 
@@ -130,20 +215,17 @@ function _rebuild_AT_with_insertions(AT::SparseMatrixCSC{T,Int}, col_indices::Ve
     # Build expanded col_indices (merge existing and new, maintain sorted order)
     expanded_col_indices = sort(unique(vcat(col_indices, collect(new_global_cols))))
 
-    # Build global->local mapping for expanded col_indices
-    global_to_local = Dict(g => l for (l, g) in enumerate(expanded_col_indices))
-
     # Collect all entries: (AT_col, AT_row, val) = (local_row, local_col_in_expanded, val)
     # Using a Dict to handle duplicates (later values win)
     entries = Dict{Tuple{Int,Int},T}()
 
     # Add existing entries from AT (reindex to expanded col_indices)
-    old_global_to_local = Dict(g => l for (l, g) in enumerate(col_indices))
+    # expanded_col_indices is sorted, use binary search
     for at_col in 1:n_local_rows
         for k in AT.colptr[at_col]:(AT.colptr[at_col+1]-1)
             old_local_col = AT.rowval[k]
             global_col = col_indices[old_local_col]
-            new_local_col = global_to_local[global_col]
+            new_local_col = searchsortedfirst(expanded_col_indices, global_col)
             entries[(at_col, new_local_col)] = AT.nzval[k]
         end
     end
@@ -151,7 +233,7 @@ function _rebuild_AT_with_insertions(AT::SparseMatrixCSC{T,Int}, col_indices::Ve
     # Add new insertions (may overwrite existing)
     for (global_i, global_j, val) in insertions
         local_row = global_i - row_offset + 1  # AT column
-        local_col = global_to_local[global_j]  # AT row
+        local_col = searchsortedfirst(expanded_col_indices, global_j)  # AT row
         entries[(local_row, local_col)] = val
     end
 
@@ -821,10 +903,11 @@ function Base.:*(A::SparseMatrixMPI{T}, B::SparseMatrixMPI{T}) where T
     end
 
     compressed_result_AT = compress_AT_cached(result_AT, compress_map, length(result_col_indices))
-    result_hash = compute_structural_hash(A.row_partition, result_col_indices, compressed_result_AT, comm)
+    # Hash computed lazily by _ensure_hash if/when needed for plan caching
+    # This avoids expensive hash computation for results that won't be reused in matrix-matrix multiply
 
     # C = A * B has rows from A and columns from B
-    return SparseMatrixMPI{T}(result_hash, A.row_partition, B.col_partition, result_col_indices, transpose(compressed_result_AT),
+    return SparseMatrixMPI{T}(nothing, A.row_partition, B.col_partition, result_col_indices, transpose(compressed_result_AT),
         nothing)
 end
 
@@ -834,44 +917,24 @@ end
 Add two distributed sparse matrices. The result has A's row partition.
 """
 function Base.:+(A::SparseMatrixMPI{T}, B::SparseMatrixMPI{T}) where T
-    comm = MPI.COMM_WORLD
-
-    # Repartition B to match A's row partition
     B_repart = repartition(B, A.row_partition)
 
-    # Both A and B_repart now have:
-    # - Same row_partition (A.row_partition)
-    # - Local CSC storage with compressed column indices
-    # - col_indices mapping compressed → global
+    if A.col_indices == B_repart.col_indices
+        return SparseMatrixMPI{T}(nothing, A.row_partition, A.col_partition,
+            A.col_indices, transpose(A.A.parent + B_repart.A.parent), nothing)
+    end
 
-    # Compute union of column indices
-    union_indices = sort(unique(vcat(A.col_indices, B_repart.col_indices)))
-    union_size = length(union_indices)
-
-    # Build mappings: compressed → union for both A and B_repart
-    global_to_union = Dict(g => l for (l, g) in enumerate(union_indices))
-    A_col_to_union = [global_to_union[g] for g in A.col_indices]
-    B_col_to_union = [global_to_union[g] for g in B_repart.col_indices]
-
-    # Reindex both to union space
-    A_union = reindex_to_union_cached(A.A.parent, A_col_to_union, union_size)
-    B_union = reindex_to_union_cached(B_repart.A.parent, B_col_to_union, union_size)
+    # Merge sorted col_indices and build mappings via linear scan (no Dict)
+    union_cols = merge_sorted_unique(A.col_indices, B_repart.col_indices)
+    A_map = build_subset_mapping(A.col_indices, union_cols)
+    B_map = build_subset_mapping(B_repart.col_indices, union_cols)
 
     # Add in union space
-    result_union = A_union + B_union
+    result = reindex_to_union_cached(A.A.parent, A_map, length(union_cols)) +
+             reindex_to_union_cached(B_repart.A.parent, B_map, length(union_cols))
 
-    # Convert result back to compressed indices
-    result_col_indices_local = isempty(result_union.rowval) ? Int[] : unique(sort(result_union.rowval))
-    result_col_indices = isempty(result_col_indices_local) ? Int[] : union_indices[result_col_indices_local]
-
-    # Compress result
-    compressed_result = compress_AT(result_union, result_col_indices_local)
-
-    # Compute hash from actual result
-    result_hash = compute_structural_hash(A.row_partition, result_col_indices, compressed_result, comm)
-
-    return SparseMatrixMPI{T}(result_hash, A.row_partition, A.col_partition,
-        result_col_indices, transpose(compressed_result), nothing)
+    return SparseMatrixMPI{T}(nothing, A.row_partition, A.col_partition,
+        union_cols, transpose(result), nothing)
 end
 
 """
@@ -880,44 +943,24 @@ end
 Subtract two distributed sparse matrices. The result has A's row partition.
 """
 function Base.:-(A::SparseMatrixMPI{T}, B::SparseMatrixMPI{T}) where T
-    comm = MPI.COMM_WORLD
-
-    # Repartition B to match A's row partition
     B_repart = repartition(B, A.row_partition)
 
-    # Both A and B_repart now have:
-    # - Same row_partition (A.row_partition)
-    # - Local CSC storage with compressed column indices
-    # - col_indices mapping compressed → global
+    if A.col_indices == B_repart.col_indices
+        return SparseMatrixMPI{T}(nothing, A.row_partition, A.col_partition,
+            A.col_indices, transpose(A.A.parent - B_repart.A.parent), nothing)
+    end
 
-    # Compute union of column indices
-    union_indices = sort(unique(vcat(A.col_indices, B_repart.col_indices)))
-    union_size = length(union_indices)
-
-    # Build mappings: compressed → union for both A and B_repart
-    global_to_union = Dict(g => l for (l, g) in enumerate(union_indices))
-    A_col_to_union = [global_to_union[g] for g in A.col_indices]
-    B_col_to_union = [global_to_union[g] for g in B_repart.col_indices]
-
-    # Reindex both to union space
-    A_union = reindex_to_union_cached(A.A.parent, A_col_to_union, union_size)
-    B_union = reindex_to_union_cached(B_repart.A.parent, B_col_to_union, union_size)
+    # Merge sorted col_indices and build mappings via linear scan (no Dict)
+    union_cols = merge_sorted_unique(A.col_indices, B_repart.col_indices)
+    A_map = build_subset_mapping(A.col_indices, union_cols)
+    B_map = build_subset_mapping(B_repart.col_indices, union_cols)
 
     # Subtract in union space
-    result_union = A_union - B_union
+    result = reindex_to_union_cached(A.A.parent, A_map, length(union_cols)) -
+             reindex_to_union_cached(B_repart.A.parent, B_map, length(union_cols))
 
-    # Convert result back to compressed indices
-    result_col_indices_local = isempty(result_union.rowval) ? Int[] : unique(sort(result_union.rowval))
-    result_col_indices = isempty(result_col_indices_local) ? Int[] : union_indices[result_col_indices_local]
-
-    # Compress result
-    compressed_result = compress_AT(result_union, result_col_indices_local)
-
-    # Compute hash from actual result
-    result_hash = compute_structural_hash(A.row_partition, result_col_indices, compressed_result, comm)
-
-    return SparseMatrixMPI{T}(result_hash, A.row_partition, A.col_partition,
-        result_col_indices, transpose(compressed_result), nothing)
+    return SparseMatrixMPI{T}(nothing, A.row_partition, A.col_partition,
+        union_cols, transpose(result), nothing)
 end
 
 """
@@ -1122,7 +1165,11 @@ function TransposePlan(A::SparseMatrixMPI{T}) where T
     local_src_indices = Int[]
     local_dst_indices = Int[]
 
-    recv_rank_to_idx = Dict(r => i for (i, r) in enumerate(recv_rank_ids))
+    # Map rank -> index in recv_rank_ids using Vector (nranks is small)
+    recv_rank_to_idx = zeros(Int, nranks)
+    for (i, r) in enumerate(recv_rank_ids)
+        recv_rank_to_idx[r+1] = i
+    end
 
     for (ent_idx, (_, _, src_rank, src_idx)) in enumerate(entries)
         dst_idx = entry_to_nzval_idx[ent_idx]
@@ -1131,7 +1178,7 @@ function TransposePlan(A::SparseMatrixMPI{T}) where T
             push!(local_dst_indices, dst_idx)
         else
             # Use indexed assignment: src_idx is the position in recv_buf from src_rank
-            recv_perm[recv_rank_to_idx[src_rank]][src_idx] = dst_idx
+            recv_perm[recv_rank_to_idx[src_rank+1]][src_idx] = dst_idx
         end
     end
 
@@ -2182,9 +2229,8 @@ function triu(A::SparseMatrixMPI{T}, k::Integer=0) where T
     else
         local_used = unique(sort(new_rowval))
         new_col_indices = col_indices[local_used]  # convert to global
-        # Compress: map old local indices to new compressed indices
-        local_to_compressed = Dict(old => new for (new, old) in enumerate(local_used))
-        compressed_rowval = [local_to_compressed[r] for r in new_rowval]
+        # Compress: local_used is sorted, use binary search instead of Dict
+        compressed_rowval = [searchsortedfirst(local_used, r) for r in new_rowval]
         compressed_AT = SparseMatrixCSC(length(new_col_indices), size(A.A.parent, 2),
             new_colptr, compressed_rowval, new_nzval)
     end
@@ -2256,9 +2302,8 @@ function tril(A::SparseMatrixMPI{T}, k::Integer=0) where T
     else
         local_used = unique(sort(new_rowval))
         new_col_indices = col_indices[local_used]  # convert to global
-        # Compress: map old local indices to new compressed indices
-        local_to_compressed = Dict(old => new for (new, old) in enumerate(local_used))
-        compressed_rowval = [local_to_compressed[r] for r in new_rowval]
+        # Compress: local_used is sorted, use binary search instead of Dict
+        compressed_rowval = [searchsortedfirst(local_used, r) for r in new_rowval]
         compressed_AT = SparseMatrixCSC(length(new_col_indices), size(A.A.parent, 2),
             new_colptr, compressed_rowval, new_nzval)
     end
