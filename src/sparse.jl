@@ -259,26 +259,15 @@ function SparseMatrixMPI{T}(A::SparseMatrixCSC{T,Int};
     row_start = row_partition[rank+1]
     row_end = row_partition[rank+2] - 1
 
-    # Extract local rows from A and store as transpose for efficient row-wise access.
-    # A[local_rows, :] gives us the local rows as CSC with shape (local_nrows, ncols).
-    # We materialize the transpose to get a CSC with shape (ncols, local_nrows) where
-    # columns correspond to local rows - this makes row iteration efficient.
+    # Extract local rows and physically transpose to get CSC with shape (ncols, local_nrows)
+    # where columns correspond to local rows - this makes row iteration efficient.
     # Note: Use transpose(), not ' (adjoint), to avoid conjugating complex values.
     local_A = A[row_start:row_end, :]
-    AT_storage = sparse(transpose(local_A))  # CSC (ncols, local_nrows), columns = local rows
+    AT_storage = sparse(transpose(local_A))  # CSC (ncols, local_nrows)
 
-    # Identify which columns have nonzeros in our local part
-    # AT_storage.rowval contains global column indices
-    col_indices = isempty(AT_storage.rowval) ? Int[] : unique(sort(AT_storage.rowval))
-
-    # Compress AT_storage: convert global column indices to local indices 1:length(col_indices)
-    # This avoids "hypersparse" storage where AT.m >> length(unique(AT.rowval))
-    # After compression: AT.m = length(col_indices), rowval uses local indices
-    compressed_AT = compress_AT(AT_storage, col_indices)
-    A_local = transpose(compressed_AT)  # Transpose wrapper for type clarity
-
-    # Structural hash computed lazily on first use via _ensure_hash
-    return SparseMatrixMPI{T}(nothing, row_partition, col_partition, col_indices, A_local, nothing)
+    # Delegate to SparseMatrixMPI_local which handles compression and col_indices
+    # The lazy transpose wrapper signals the expected internal storage format
+    return SparseMatrixMPI_local(transpose(AT_storage); comm=comm, col_partition=col_partition)
 end
 
 """
@@ -1361,14 +1350,22 @@ function execute_plan!(plan::TransposePlan{T}, A::SparseMatrixMPI{T}) where T
 end
 
 """
-    materialize_transpose(A::SparseMatrixMPI{T}) where T
+    SparseMatrixMPI{T}(At::Transpose{T, SparseMatrixMPI{T}}) where T
 
-Materialize the transpose of A, using cached result if available.
+Materialize a lazy transpose of a SparseMatrixMPI, using cached result if available.
 If the transpose has been computed before, returns the cached result.
 Otherwise, computes the transpose via TransposePlan and caches it bidirectionally
 (A.cached_transpose = Y and Y.cached_transpose = A).
+
+# Example
+```julia
+A = SparseMatrixMPI{Float64}(sparse(...))
+At = transpose(A)           # Lazy transpose wrapper
+At_mat = SparseMatrixMPI(At) # Materialize the transpose
+```
 """
-function materialize_transpose(A::SparseMatrixMPI{T}) where T
+function SparseMatrixMPI{T}(At::Transpose{T, SparseMatrixMPI{T}}) where T
+    A = At.parent
     # Check if already cached
     if A.cached_transpose !== nothing
         return A.cached_transpose
@@ -1384,6 +1381,9 @@ function materialize_transpose(A::SparseMatrixMPI{T}) where T
 
     return Y
 end
+
+# Convenience: allow SparseMatrixMPI(transpose(A)) without specifying type parameter
+SparseMatrixMPI(At::Transpose{T, SparseMatrixMPI{T}}) where T = SparseMatrixMPI{T}(At)
 
 # VectorPlan constructor for sparse A * x (adds method to VectorPlan from vectors.jl)
 
@@ -1575,7 +1575,7 @@ Returns a transposed VectorMPI.
 function Base.:*(vt::Transpose{<:Any,VectorMPI{T}}, A::SparseMatrixMPI{T}) where T
     v = vt.parent
     # transpose(v) * A = transpose(transpose(A) * v)
-    A_transposed = materialize_transpose(A)
+    A_transposed = SparseMatrixMPI(transpose(A))
     result = A_transposed * v
     return transpose(result)
 end
@@ -1788,7 +1788,7 @@ Compute transpose(A) * B by materializing the transpose of A first.
 """
 function Base.:*(At::TransposedSparseMatrixMPI{T}, B::SparseMatrixMPI{T}) where T
     A = At.parent
-    A_transposed = materialize_transpose(A)
+    A_transposed = SparseMatrixMPI(transpose(A))
     return A_transposed * B
 end
 
@@ -1799,7 +1799,7 @@ Compute A * transpose(B) by materializing the transpose of B first.
 """
 function Base.:*(A::SparseMatrixMPI{T}, Bt::TransposedSparseMatrixMPI{T}) where T
     B = Bt.parent
-    B_transposed = materialize_transpose(B)
+    B_transposed = SparseMatrixMPI(transpose(B))
     return A * B_transposed
 end
 
@@ -1810,7 +1810,7 @@ Compute transpose(A) * x by materializing the transpose of A first.
 """
 function Base.:*(At::TransposedSparseMatrixMPI{T}, x::VectorMPI{T}) where T
     A = At.parent
-    A_transposed = materialize_transpose(A)
+    A_transposed = SparseMatrixMPI(transpose(A))
     return A_transposed * x
 end
 
@@ -1860,7 +1860,7 @@ Compute transpose(A) * B by materializing the transpose of A first.
 """
 function Base.:*(At::TransposedSparseMatrixMPI{T}, B::MatrixMPI{T}) where T
     A = At.parent
-    A_transposed = materialize_transpose(A)
+    A_transposed = SparseMatrixMPI(transpose(A))
     return A_transposed * B
 end
 
@@ -2892,7 +2892,7 @@ function Base.:*(A::MatrixMPI{T}, B::SparseMatrixMPI{T}) where T
     # We compute column-by-column of the result instead
 
     columns = Vector{VectorMPI{T}}(undef, n)
-    B_t = materialize_transpose(B)
+    B_t = SparseMatrixMPI(transpose(B))
 
     for k in 1:n
         # Column k of result = A * (column k of B) = A * B_t'[:, k]

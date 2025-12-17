@@ -52,9 +52,10 @@ C = A ⊛ B   # Parallel multiplication using available threads
 ### Transpose and Adjoint
 
 ```julia
-transpose(A)   # Lazy transpose
-conj(A)        # Conjugate (new matrix)
-A'             # Adjoint (conjugate transpose, lazy)
+transpose(A)              # Lazy transpose
+conj(A)                   # Conjugate (new matrix)
+A'                        # Adjoint (conjugate transpose, lazy)
+SparseMatrixMPI(transpose(A))  # Materialize lazy transpose (cached)
 ```
 
 ### Matrix-Vector Multiplication

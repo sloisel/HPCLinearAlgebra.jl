@@ -137,6 +137,7 @@ Note: Uses `transpose()` (not adjoint `'`) to correctly handle complex values wi
 `transpose(A)` returns `Transpose{T, SparseMatrixMPI{T}}` (lazy wrapper). Materialization happens automatically when needed:
 - `transpose(A) * transpose(B)` → `transpose(B * A)` (stays lazy)
 - `transpose(A) * B` or `A * transpose(B)` → materializes via `TransposePlan`
+- `SparseMatrixMPI(transpose(A))` → explicitly materialize the transpose (cached bidirectionally)
 
 ### Indexing Operations
 
