@@ -288,25 +288,41 @@ This configuration uses only BLAS-level threading, which is the same strategy Ju
 
 ### Performance Comparison
 
-The following table compares MUMPS (`OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=10`) against Julia's built-in sparse solver (also using 10 BLAS threads) on a 2D Laplacian problem. Benchmarks were run on a 2025 M4 MacBook Pro with 10 CPU cores:
+The following table compares MUMPS (`OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=10`) against Julia's built-in sparse solver (also using the same settings) on a 2D Laplacian problem. Benchmarks were run on a 2025 M4 MacBook Pro with 10 CPU cores:
 
 | n | Julia (ms) | MUMPS (ms) | Ratio |
 |---|------------|------------|-------|
-| 9 | 0.005 | 0.041 | 8.7x |
-| 100 | 0.021 | 0.070 | 3.3x |
-| 992 | 0.261 | 0.412 | 1.6x |
-| 10,000 | 4.25 | 5.00 | 1.18x |
-| 99,856 | 49.1 | 56.7 | 1.16x |
-| 1,000,000 | 636 | 641 | 1.01x |
+| 9 | 0.004 | 0.041 | 9.7x |
+| 100 | 0.023 | 0.070 | 3.0x |
+| 992 | 0.269 | 0.418 | 1.6x |
+| 10,000 | 4.28 | 5.60 | 1.31x |
+| 99,856 | 51.2 | 56.9 | 1.11x |
+| 1,000,000 | 665 | 666 | 1.0x |
 
 Key observations:
 - At small problem sizes, MUMPS has initialization overhead (~0.04ms)
-- At large problem sizes (n ≥ 100,000), MUMPS is within 1-16% of Julia's built-in solver
-- At n = 1,000,000, MUMPS is essentially the same speed (1% slower)
+- At large problem sizes (n ≥ 100,000), MUMPS is within 11% of Julia's built-in solver
+- At n = 1,000,000, MUMPS matches Julia's speed exactly (1.0x ratio)
 
 ### Default Behavior
 
-Without setting environment variables, both OpenMP and OpenBLAS will attempt to use all available cores, which can lead to thread oversubscription and degraded performance. For predictable results, explicitly set the environment variables before running your program.
+For optimal performance, set threading environment variables **before starting Julia**:
+
+```bash
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=10  # or your number of CPU cores
+julia your_script.jl
+```
+
+This is necessary because OpenBLAS creates its thread pool during library initialization, before LinearAlgebraMPI has a chance to configure it. LinearAlgebraMPI attempts to set sensible defaults programmatically, but this may not always take effect if the thread pool is already initialized.
+
+You can also add these to your shell profile (`.bashrc`, `.zshrc`, etc.) or Julia's `startup.jl`:
+
+```julia
+# In ~/.julia/config/startup.jl
+ENV["OMP_NUM_THREADS"] = "1"
+ENV["OPENBLAS_NUM_THREADS"] = string(Sys.CPU_THREADS)
+```
 
 ### Advanced: Combined Threading
 
