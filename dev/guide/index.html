@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>User Guide · LinearAlgebraMPI.jl</title><meta name="title" content="User Guide · LinearAlgebraMPI.jl"/><meta property="og:title" content="User Guide · LinearAlgebraMPI.jl"/><meta property="twitter:title" content="User Guide · LinearAlgebraMPI.jl"/><meta name="description" content="Documentation for LinearAlgebraMPI.jl."/><meta property="og:description" content="Documentation for LinearAlgebraMPI.jl."/><meta property="twitter:description" content="Documentation for LinearAlgebraMPI.jl."/><meta property="og:url" content="https://sloisel.github.io/LinearAlgebraMPI.jl/guide/"/><meta property="twitter:url" content="https://sloisel.github.io/LinearAlgebraMPI.jl/guide/"/><link rel="canonical" href="https://sloisel.github.io/LinearAlgebraMPI.jl/guide/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">LinearAlgebraMPI.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><a class="tocitem" href="../installation/">Installation</a></li><li class="is-active"><a class="tocitem" href>User Guide</a><ul class="internal"><li><a class="tocitem" href="#Core-Types"><span>Core Types</span></a></li><li><a class="tocitem" href="#Creating-Distributed-Types"><span>Creating Distributed Types</span></a></li><li><a class="tocitem" href="#Basic-Operations"><span>Basic Operations</span></a></li><li><a class="tocitem" href="#Solving-Linear-Systems"><span>Solving Linear Systems</span></a></li><li><a class="tocitem" href="#Row-wise-Operations-with-map_rows"><span>Row-wise Operations with map_rows</span></a></li><li><a class="tocitem" href="#Type-Conversions"><span>Type Conversions</span></a></li><li><a class="tocitem" href="#IO-and-Output"><span>IO and Output</span></a></li><li><a class="tocitem" href="#Repartitioning"><span>Repartitioning</span></a></li><li><a class="tocitem" href="#Cache-Management"><span>Cache Management</span></a></li><li><a class="tocitem" href="#MPI-Collective-Operations"><span>MPI Collective Operations</span></a></li><li><a class="tocitem" href="#Next-Steps"><span>Next Steps</span></a></li></ul></li><li><a class="tocitem" href="../api/">API Reference</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>User Guide</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>User Guide</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/sloisel/LinearAlgebraMPI.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/sloisel/LinearAlgebraMPI.jl/blob/main/docs/src/guide.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="User-Guide"><a class="docs-heading-anchor" href="#User-Guide">User Guide</a><a id="User-Guide-1"></a><a class="docs-heading-anchor-permalink" href="#User-Guide" title="Permalink"></a></h1><p>This guide covers the essential workflows for using LinearAlgebraMPI.jl.</p><h2 id="Core-Types"><a class="docs-heading-anchor" href="#Core-Types">Core Types</a><a id="Core-Types-1"></a><a class="docs-heading-anchor-permalink" href="#Core-Types" title="Permalink"></a></h2><p>LinearAlgebraMPI provides three distributed types:</p><table><tr><th style="text-align: right">Type</th><th style="text-align: right">Description</th><th style="text-align: right">Storage</th></tr><tr><td style="text-align: right"><code>VectorMPI{T}</code></td><td style="text-align: right">Distributed vector</td><td style="text-align: right">Row-partitioned</td></tr><tr><td style="text-align: right"><code>MatrixMPI{T}</code></td><td style="text-align: right">Distributed dense matrix</td><td style="text-align: right">Row-partitioned</td></tr><tr><td style="text-align: right"><code>SparseMatrixMPI{T,Ti}</code></td><td style="text-align: right">Distributed sparse matrix</td><td style="text-align: right">Row-partitioned CSR</td></tr></table><p>All types are row-partitioned across MPI ranks, meaning each rank owns a contiguous range of rows.</p><h2 id="Creating-Distributed-Types"><a class="docs-heading-anchor" href="#Creating-Distributed-Types">Creating Distributed Types</a><a id="Creating-Distributed-Types-1"></a><a class="docs-heading-anchor-permalink" href="#Creating-Distributed-Types" title="Permalink"></a></h2><h3 id="From-Native-Julia-Types"><a class="docs-heading-anchor" href="#From-Native-Julia-Types">From Native Julia Types</a><a id="From-Native-Julia-Types-1"></a><a class="docs-heading-anchor-permalink" href="#From-Native-Julia-Types" title="Permalink"></a></h3><pre><code class="language-julia hljs">using MPI
+MPI.Init()
+
+using LinearAlgebraMPI
+using SparseArrays
+
+# Create from native types (data is distributed automatically)
+v = VectorMPI(randn(100))
+A = MatrixMPI(randn(50, 30))
+S = SparseMatrixMPI{Float64}(sprandn(100, 100, 0.1))</code></pre><h3 id="Local-Constructors"><a class="docs-heading-anchor" href="#Local-Constructors">Local Constructors</a><a id="Local-Constructors-1"></a><a class="docs-heading-anchor-permalink" href="#Local-Constructors" title="Permalink"></a></h3><p>For performance-critical code, use local constructors that avoid global communication:</p><pre><code class="language-julia hljs"># Create from local data (each rank provides its own rows)
+v_local = VectorMPI_local(my_local_vector)
+A_local = MatrixMPI_local(my_local_matrix)
+S_local = SparseMatrixMPI_local(my_local_sparse)</code></pre><h2 id="Basic-Operations"><a class="docs-heading-anchor" href="#Basic-Operations">Basic Operations</a><a id="Basic-Operations-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Operations" title="Permalink"></a></h2><h3 id="Vector-Operations"><a class="docs-heading-anchor" href="#Vector-Operations">Vector Operations</a><a id="Vector-Operations-1"></a><a class="docs-heading-anchor-permalink" href="#Vector-Operations" title="Permalink"></a></h3><pre><code class="language-julia hljs">v = VectorMPI(randn(100))
+w = VectorMPI(randn(100))
+
+# Arithmetic
+u = v + w
+u = v - w
+u = 2.0 * v
+u = v * 2.0
+
+# Linear algebra
+n = norm(v)
+d = dot(v, w)
+c = conj(v)</code></pre><h3 id="Matrix-Vector-Products"><a class="docs-heading-anchor" href="#Matrix-Vector-Products">Matrix-Vector Products</a><a id="Matrix-Vector-Products-1"></a><a class="docs-heading-anchor-permalink" href="#Matrix-Vector-Products" title="Permalink"></a></h3><pre><code class="language-julia hljs">A = MatrixMPI(randn(50, 100))
+v = VectorMPI(randn(100))
+
+# Matrix-vector multiply
+y = A * v</code></pre><h3 id="Sparse-Operations"><a class="docs-heading-anchor" href="#Sparse-Operations">Sparse Operations</a><a id="Sparse-Operations-1"></a><a class="docs-heading-anchor-permalink" href="#Sparse-Operations" title="Permalink"></a></h3><pre><code class="language-julia hljs">using SparseArrays
+
+A = SparseMatrixMPI{Float64}(sprandn(100, 100, 0.1))
+v = VectorMPI(randn(100))
+
+# Matrix-vector multiply
+y = A * v
+
+# Matrix-matrix multiply
+B = SparseMatrixMPI{Float64}(sprandn(100, 100, 0.1))
+C = A * B</code></pre><h2 id="Solving-Linear-Systems"><a class="docs-heading-anchor" href="#Solving-Linear-Systems">Solving Linear Systems</a><a id="Solving-Linear-Systems-1"></a><a class="docs-heading-anchor-permalink" href="#Solving-Linear-Systems" title="Permalink"></a></h2><h3 id="Direct-Solve-with-Backslash"><a class="docs-heading-anchor" href="#Direct-Solve-with-Backslash">Direct Solve with Backslash</a><a id="Direct-Solve-with-Backslash-1"></a><a class="docs-heading-anchor-permalink" href="#Direct-Solve-with-Backslash" title="Permalink"></a></h3><pre><code class="language-julia hljs">using SparseArrays
+
+# Create a well-conditioned sparse matrix
+A = SparseMatrixMPI{Float64}(sprandn(100, 100, 0.1) + 10I)
+b = VectorMPI(randn(100))
+
+# Solve A * x = b
+x = A \ b</code></pre><h3 id="Symmetric-Systems-(Faster)"><a class="docs-heading-anchor" href="#Symmetric-Systems-(Faster)">Symmetric Systems (Faster)</a><a id="Symmetric-Systems-(Faster)-1"></a><a class="docs-heading-anchor-permalink" href="#Symmetric-Systems-(Faster)" title="Permalink"></a></h3><p>For symmetric matrices, wrap with <code>Symmetric</code> to use faster LDLT factorization:</p><pre><code class="language-julia hljs">using LinearAlgebra
+
+# Create symmetric positive definite matrix
+A_base = SparseMatrixMPI{Float64}(sprandn(100, 100, 0.1))
+A_spd = A_base + SparseMatrixMPI(transpose(A_base)) + 
+        SparseMatrixMPI{Float64}(sparse(10.0I, 100, 100))
+
+b = VectorMPI(randn(100))
+
+# Use Symmetric wrapper for faster solve
+x = Symmetric(A_spd) \ b</code></pre><h3 id="Reusing-Factorizations"><a class="docs-heading-anchor" href="#Reusing-Factorizations">Reusing Factorizations</a><a id="Reusing-Factorizations-1"></a><a class="docs-heading-anchor-permalink" href="#Reusing-Factorizations" title="Permalink"></a></h3><p>For repeated solves with the same matrix, compute the factorization once:</p><pre><code class="language-julia hljs">using LinearAlgebra
+
+# LU factorization
+F = lu(A)
+x1 = F \ b1
+x2 = F \ b2
+finalize!(F)  # Clean up MUMPS resources
+
+# LDLT factorization (symmetric matrices)
+F = ldlt(A_spd)
+x = F \ b
+finalize!(F)</code></pre><h2 id="Row-wise-Operations-with-map_rows"><a class="docs-heading-anchor" href="#Row-wise-Operations-with-map_rows">Row-wise Operations with map_rows</a><a id="Row-wise-Operations-with-map_rows-1"></a><a class="docs-heading-anchor-permalink" href="#Row-wise-Operations-with-map_rows" title="Permalink"></a></h2><p>The <code>map_rows</code> function applies a function to corresponding rows across distributed arrays:</p><pre><code class="language-julia hljs">A = MatrixMPI(randn(50, 10))
+
+# Compute row norms
+norms = map_rows(row -&gt; norm(row), A)  # Returns VectorMPI
+
+# Compute row sums and products
+stats = map_rows(row -&gt; [sum(row), prod(row)]&#39;, A)  # Returns MatrixMPI
+
+# Combine multiple inputs
+v = VectorMPI(randn(50))
+weighted = map_rows((row, w) -&gt; sum(row) * w[1], A, v)</code></pre><h3 id="Result-Types"><a class="docs-heading-anchor" href="#Result-Types">Result Types</a><a id="Result-Types-1"></a><a class="docs-heading-anchor-permalink" href="#Result-Types" title="Permalink"></a></h3><table><tr><th style="text-align: right"><code>f</code> returns</th><th style="text-align: right">Result type</th></tr><tr><td style="text-align: right">Scalar</td><td style="text-align: right"><code>VectorMPI</code></td></tr><tr><td style="text-align: right">Column vector</td><td style="text-align: right"><code>VectorMPI</code> (concatenated)</td></tr><tr><td style="text-align: right">Row vector (<code>v&#39;</code>)</td><td style="text-align: right"><code>MatrixMPI</code></td></tr><tr><td style="text-align: right">Matrix</td><td style="text-align: right"><code>MatrixMPI</code></td></tr></table><h2 id="Type-Conversions"><a class="docs-heading-anchor" href="#Type-Conversions">Type Conversions</a><a id="Type-Conversions-1"></a><a class="docs-heading-anchor-permalink" href="#Type-Conversions" title="Permalink"></a></h2><h3 id="Gathering-to-Native-Types"><a class="docs-heading-anchor" href="#Gathering-to-Native-Types">Gathering to Native Types</a><a id="Gathering-to-Native-Types-1"></a><a class="docs-heading-anchor-permalink" href="#Gathering-to-Native-Types" title="Permalink"></a></h3><p>Convert distributed types back to native Julia arrays (gathers data to all ranks):</p><pre><code class="language-julia hljs">v_mpi = VectorMPI(randn(100))
+v_native = Vector(v_mpi)  # Full vector on all ranks
+
+A_mpi = MatrixMPI(randn(50, 30))
+A_native = Matrix(A_mpi)  # Full matrix on all ranks
+
+S_mpi = SparseMatrixMPI{Float64}(sprandn(100, 100, 0.1))
+S_native = SparseMatrixCSC(S_mpi)  # Full sparse matrix</code></pre><h2 id="IO-and-Output"><a class="docs-heading-anchor" href="#IO-and-Output">IO and Output</a><a id="IO-and-Output-1"></a><a class="docs-heading-anchor-permalink" href="#IO-and-Output" title="Permalink"></a></h2><h3 id="Printing-from-Rank-0"><a class="docs-heading-anchor" href="#Printing-from-Rank-0">Printing from Rank 0</a><a id="Printing-from-Rank-0-1"></a><a class="docs-heading-anchor-permalink" href="#Printing-from-Rank-0" title="Permalink"></a></h3><p>Use <code>io0()</code> to print from rank 0 only:</p><pre><code class="language-julia hljs">println(io0(), &quot;This prints once from rank 0!&quot;)
+
+# Custom rank selection
+println(io0(r=Set([0, 1])), &quot;Hello from ranks 0 and 1!&quot;)</code></pre><h3 id="MPI-Rank-Information"><a class="docs-heading-anchor" href="#MPI-Rank-Information">MPI Rank Information</a><a id="MPI-Rank-Information-1"></a><a class="docs-heading-anchor-permalink" href="#MPI-Rank-Information" title="Permalink"></a></h3><pre><code class="language-julia hljs">using MPI
+
+rank = MPI.Comm_rank(MPI.COMM_WORLD)   # Current rank (0 to nranks-1)
+nranks = MPI.Comm_size(MPI.COMM_WORLD) # Total number of ranks</code></pre><h2 id="Repartitioning"><a class="docs-heading-anchor" href="#Repartitioning">Repartitioning</a><a id="Repartitioning-1"></a><a class="docs-heading-anchor-permalink" href="#Repartitioning" title="Permalink"></a></h2><p>Redistribute data to match a different partition:</p><pre><code class="language-julia hljs">v = VectorMPI(randn(100))
+
+# Get current partition
+old_partition = v.partition
+
+# Create new partition
+new_partition = uniform_partition(100, MPI.Comm_size(MPI.COMM_WORLD))
+
+# Repartition
+v_new = repartition(v, new_partition)</code></pre><h2 id="Cache-Management"><a class="docs-heading-anchor" href="#Cache-Management">Cache Management</a><a id="Cache-Management-1"></a><a class="docs-heading-anchor-permalink" href="#Cache-Management" title="Permalink"></a></h2><p>LinearAlgebraMPI caches communication plans for efficiency. Clear caches when needed:</p><pre><code class="language-julia hljs">clear_plan_cache!()  # Clears all plan caches including MUMPS analysis cache</code></pre><h2 id="MPI-Collective-Operations"><a class="docs-heading-anchor" href="#MPI-Collective-Operations">MPI Collective Operations</a><a id="MPI-Collective-Operations-1"></a><a class="docs-heading-anchor-permalink" href="#MPI-Collective-Operations" title="Permalink"></a></h2><div class="admonition is-warning" id="All-Operations-Are-Collective-1bb7003cbb73574d"><header class="admonition-header">All Operations Are Collective<a class="admonition-anchor" href="#All-Operations-Are-Collective-1bb7003cbb73574d" title="Permalink"></a></header><div class="admonition-body"><p>Most LinearAlgebraMPI functions are MPI collective operations. All ranks must:</p><ul><li>Call the function together</li><li>Use the same parameters</li><li>Avoid conditional execution based on rank</li></ul></div></div><p><strong>Correct:</strong></p><pre><code class="language-julia hljs"># All ranks execute this together
+x = A \ b</code></pre><p><strong>Incorrect (causes deadlock):</strong></p><pre><code class="language-julia hljs">if rank == 0
+    x = A \ b  # Only rank 0 calls - DEADLOCK!
+end</code></pre><h2 id="Next-Steps"><a class="docs-heading-anchor" href="#Next-Steps">Next Steps</a><a id="Next-Steps-1"></a><a class="docs-heading-anchor-permalink" href="#Next-Steps" title="Permalink"></a></h2><ul><li>See the <a href="../api/#API-Reference">API Reference</a> for detailed function documentation</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../installation/">« Installation</a><a class="docs-footer-nextpage" href="../api/">API Reference »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Friday 19 December 2025 14:12">Friday 19 December 2025</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
