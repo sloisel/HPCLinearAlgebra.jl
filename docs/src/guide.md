@@ -224,17 +224,17 @@ The following table compares MUMPS (`OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1
 
 | n | Julia (ms) | MUMPS (ms) | Ratio |
 |---|------------|------------|-------|
-| 9 | 0.004 | 0.041 | 9.7x |
-| 100 | 0.023 | 0.070 | 3.0x |
-| 992 | 0.269 | 0.418 | 1.6x |
-| 10,000 | 4.28 | 5.60 | 1.31x |
-| 99,856 | 51.2 | 56.9 | 1.11x |
-| 1,000,000 | 665 | 666 | 1.0x |
+| 9 | 0.004 | 0.024 | 6.1x |
+| 100 | 0.020 | 0.044 | 2.3x |
+| 961 | 0.226 | 0.276 | 1.2x |
+| 10,000 | 3.99 | 3.76 | 0.9x |
+| 99,856 | 48.6 | 44.8 | 0.9x |
+| 1,000,000 | 597 | 550 | 0.9x |
 
 Key observations:
-- At small problem sizes, MUMPS has initialization overhead (~0.04ms)
-- At large problem sizes (n ≥ 100,000), MUMPS is within 11% of Julia's built-in solver
-- At n = 1,000,000, MUMPS matches Julia's speed exactly (1.0x ratio)
+- At small problem sizes, MUMPS has initialization overhead (~0.02ms)
+- At large problem sizes (n ≥ 10,000), MUMPS is **faster** than Julia's built-in solver
+- Cached symbolic analysis and vectorized value copying minimize repeated factorization overhead
 
 ### Default Behavior
 

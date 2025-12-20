@@ -71,6 +71,7 @@ mutable struct MUMPSAnalysisPlan{T}
     irn_loc::Vector{MUMPS_INT}  # Row indices (structure, immutable)
     jcn_loc::Vector{MUMPS_INT}  # Column indices (structure, immutable)
     a_loc::Vector{T}  # Value array (updated for each factorization)
+    nzval_perm::Vector{Int}  # Permutation: a_loc[k] = AT.nzval[nzval_perm[k]]
     n::Int
     symmetric::Bool
     row_partition::Vector{Int}
@@ -199,7 +200,10 @@ end
     extract_local_coo(A::SparseMatrixMPI{T}; symmetric::Bool=false)
 
 Extract local COO entries from a distributed sparse matrix for MUMPS input.
-Returns (irn_loc, jcn_loc, a_loc) with 1-based global indices.
+Returns (irn_loc, jcn_loc, a_loc, nzval_perm) with 1-based global indices.
+
+The nzval_perm array maps COO indices to AT.nzval indices, enabling fast
+value updates: a_loc .= AT.nzval[nzval_perm]
 
 For symmetric matrices, only lower triangular entries (row >= col) are extracted.
 """
@@ -212,6 +216,7 @@ function extract_local_coo(A::SparseMatrixMPI{T}; symmetric::Bool=false) where T
     irn_loc = MUMPS_INT[]
     jcn_loc = MUMPS_INT[]
     a_loc = T[]
+    nzval_perm = Int[]
 
     # A.A.parent is the underlying CSC storage
     # Columns in A.A.parent correspond to local rows
@@ -231,11 +236,12 @@ function extract_local_coo(A::SparseMatrixMPI{T}; symmetric::Bool=false) where T
                 push!(irn_loc, MUMPS_INT(global_row))
                 push!(jcn_loc, MUMPS_INT(global_col))
                 push!(a_loc, val)
+                push!(nzval_perm, ptr)
             end
         end
     end
 
-    return irn_loc, jcn_loc, a_loc
+    return irn_loc, jcn_loc, a_loc, nzval_perm
 end
 
 # ============================================================================
@@ -270,7 +276,7 @@ function _get_or_create_analysis_plan(A::SparseMatrixMPI{T}, symmetric::Bool) wh
     @assert m == n "Matrix must be square for factorization"
 
     # Extract local COO entries
-    irn_loc, jcn_loc, a_loc = extract_local_coo(A; symmetric=symmetric)
+    irn_loc, jcn_loc, a_loc, nzval_perm = extract_local_coo(A; symmetric=symmetric)
     nz_loc = length(a_loc)
 
     # Create MUMPS instance
@@ -312,7 +318,7 @@ function _get_or_create_analysis_plan(A::SparseMatrixMPI{T}, symmetric::Bool) wh
 
     # Create and cache the analysis plan
     plan = MUMPSAnalysisPlan{T}(
-        mumps, irn_loc, jcn_loc, a_loc,
+        mumps, irn_loc, jcn_loc, a_loc, nzval_perm,
         n, symmetric, copy(A.row_partition), structural_hash
     )
     _mumps_analysis_cache[cache_key] = plan
@@ -324,28 +330,11 @@ end
     _update_values!(plan::MUMPSAnalysisPlan{T}, A::SparseMatrixMPI{T}, symmetric::Bool) where T
 
 Update the values in a cached analysis plan from a new matrix with the same structure.
+Uses cached nzval_perm for fast vectorized copy.
 """
 function _update_values!(plan::MUMPSAnalysisPlan{T}, A::SparseMatrixMPI{T}, symmetric::Bool) where T
-    comm = MPI.COMM_WORLD
-    rank = MPI.Comm_rank(comm)
-
-    row_start = A.row_partition[rank + 1]
-    AT = A.A.parent
-
-    # Update values in-place (structure must match exactly)
-    idx = 1
-    for local_row in 1:AT.n
-        global_row = row_start + local_row - 1
-        for ptr in AT.colptr[local_row]:(AT.colptr[local_row + 1] - 1)
-            local_col_idx = AT.rowval[ptr]
-            global_col = A.col_indices[local_col_idx]
-
-            if !symmetric || global_row >= global_col
-                plan.a_loc[idx] = AT.nzval[ptr]
-                idx += 1
-            end
-        end
-    end
+    # Fast vectorized copy using cached permutation
+    plan.a_loc .= A.A.parent.nzval[plan.nzval_perm]
 end
 
 """
