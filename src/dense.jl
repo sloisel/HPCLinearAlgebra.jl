@@ -34,15 +34,19 @@ function compute_dense_structural_hash(row_partition::Vector{Int}, col_partition
 end
 
 """
-    MatrixMPI{T}
+    MatrixMPI{T,AM}
 
 A distributed dense matrix partitioned by rows across MPI ranks.
 
+# Type Parameters
+- `T`: Element type (e.g., `Float64`, `ComplexF64`)
+- `AM<:AbstractMatrix{T}`: Storage type for local matrix (e.g., `Matrix{T}` or `MtlMatrix{T}`)
+
 # Fields
 - `structural_hash::Blake3Hash`: 256-bit Blake3 hash of the structural pattern
-- `row_partition::Vector{Int}`: Row partition boundaries, length = nranks + 1
-- `col_partition::Vector{Int}`: Column partition boundaries, length = nranks + 1 (for transpose)
-- `A::Matrix{T}`: Local rows (NOT transposed), size = (local_nrows, ncols)
+- `row_partition::Vector{Int}`: Row partition boundaries, length = nranks + 1 (always on CPU)
+- `col_partition::Vector{Int}`: Column partition boundaries, length = nranks + 1 (always on CPU)
+- `A::AM`: Local rows (NOT transposed), size = (local_nrows, ncols)
 
 # Invariants
 - `row_partition` and `col_partition` are sorted
@@ -51,21 +55,36 @@ A distributed dense matrix partitioned by rows across MPI ranks.
 - `size(A, 1) == row_partition[rank+2] - row_partition[rank+1]`
 - `size(A, 2) == col_partition[end] - 1`
 """
-mutable struct MatrixMPI{T} <: AbstractMatrix{T}
+mutable struct MatrixMPI{T,AM<:AbstractMatrix{T}} <: AbstractMatrix{T}
     structural_hash::OptionalBlake3Hash
     row_partition::Vector{Int}
     col_partition::Vector{Int}
-    A::Matrix{T}
+    A::AM
+end
+
+# Type alias for CPU-backed MatrixMPI (default, backwards compatible)
+const MatrixMPI_CPU{T} = MatrixMPI{T,Matrix{T}}
+
+# Convenience constructor that infers AM from the matrix type
+MatrixMPI{T}(hash::OptionalBlake3Hash, row_partition::Vector{Int}, col_partition::Vector{Int}, A::AM) where {T,AM<:AbstractMatrix{T}} =
+    MatrixMPI{T,AM}(hash, row_partition, col_partition, A)
+
+# Adapt.jl support for converting MatrixMPI between backends
+function Adapt.adapt_structure(to, M::MatrixMPI{T,AM}) where {T,AM}
+    new_A = adapt(to, M.A)
+    return MatrixMPI{T,typeof(new_A)}(M.structural_hash, M.row_partition, M.col_partition, new_A)
 end
 
 """
-    MatrixMPI_local(A_local::Matrix{T}; comm=MPI.COMM_WORLD, col_partition=...) where T
+    MatrixMPI_local(A_local::AbstractMatrix{T}; comm=MPI.COMM_WORLD, col_partition=...) where T
 
 Create a MatrixMPI from a local matrix on each rank.
 
 Unlike `MatrixMPI(M_global)` which takes a global matrix and partitions it,
 this constructor takes only the local rows of the matrix that each rank owns.
 The row partition is computed by gathering the local row counts from all ranks.
+
+The type of `A_local` determines the storage backend (CPU Matrix, GPU MtlMatrix, etc.).
 
 All ranks must have local matrices with the same number of columns.
 A collective error is raised if the column counts don't match.
@@ -82,9 +101,9 @@ A = MatrixMPI_local(randn(3, 3))  # on rank 1
 # Result: 5×3 distributed matrix with row_partition [1, 3, 6]
 ```
 """
-function MatrixMPI_local(A_local::Matrix{T};
+function MatrixMPI_local(A_local::AM;
                          comm::MPI.Comm=MPI.COMM_WORLD,
-                         col_partition::Vector{Int}=uniform_partition(size(A_local, 2), MPI.Comm_size(comm))) where T
+                         col_partition::Vector{Int}=uniform_partition(size(A_local, 2), MPI.Comm_size(comm))) where {T,AM<:AbstractMatrix{T}}
     nranks = MPI.Comm_size(comm)
 
     local_nrows, local_ncols = size(A_local)
@@ -110,8 +129,9 @@ function MatrixMPI_local(A_local::Matrix{T};
         row_partition[r+1] = row_partition[r] + all_row_counts[r]
     end
 
+    # Copy to preserve the same array type
     # Structural hash computed lazily on first use via _ensure_hash
-    return MatrixMPI{T}(nothing, row_partition, col_partition, copy(A_local))
+    return MatrixMPI{T,AM}(nothing, row_partition, col_partition, copy(A_local))
 end
 
 """
@@ -336,31 +356,37 @@ The plan gathers these elements from the distributed vector x based on x's parti
 - `recv_perm::Vector{Vector{Int}}`: For each recv rank, indices into gathered
 - `local_src_indices::Vector{Int}`: Source indices for local copy (into x.v)
 - `local_dst_indices::Vector{Int}`: Destination indices for local copy (into gathered)
-- `gathered::Vector{T}`: Pre-allocated buffer for gathered elements (full x vector)
+- `gathered::AV`: Pre-allocated buffer for gathered elements (same type as input)
+- `gathered_cpu::Vector{T}`: CPU staging buffer (used when AV is GPU array)
 """
-mutable struct DenseMatrixVectorPlan{T}
+mutable struct DenseMatrixVectorPlan{T,AV<:AbstractVector{T}}
     send_rank_ids::Vector{Int}
     send_indices::Vector{Vector{Int}}
-    send_bufs::Vector{Vector{T}}
+    send_bufs::Vector{Vector{T}}      # Always CPU for MPI
     send_reqs::Vector{MPI.Request}
     recv_rank_ids::Vector{Int}
-    recv_bufs::Vector{Vector{T}}
+    recv_bufs::Vector{Vector{T}}      # Always CPU for MPI
     recv_reqs::Vector{MPI.Request}
     recv_perm::Vector{Vector{Int}}
     local_src_indices::Vector{Int}
     local_dst_indices::Vector{Int}
-    gathered::Vector{T}
+    gathered::AV                       # Same type as input vector
+    gathered_cpu::Vector{T}            # CPU staging buffer
     # Cached partition hash for result vector (computed lazily on first use)
     result_partition_hash::OptionalBlake3Hash
     result_partition::Union{Nothing, Vector{Int}}
 end
 
+# Type alias for CPU-backed DenseMatrixVectorPlan (backwards compatible)
+const DenseMatrixVectorPlan_CPU{T} = DenseMatrixVectorPlan{T,Vector{T}}
+
 """
-    DenseMatrixVectorPlan(A::MatrixMPI{T}, x::VectorMPI{T}) where T
+    DenseMatrixVectorPlan(A::MatrixMPI{T,AM}, x::VectorMPI{T,AV}) where {T,AM,AV}
 
 Create a communication plan to gather all x elements (x[1:ncols]) for dense matrix-vector multiplication.
+The gathered buffer will have the same storage type as the input vector x.
 """
-function DenseMatrixVectorPlan(A::MatrixMPI{T}, x::VectorMPI{T}) where T
+function DenseMatrixVectorPlan(A::MatrixMPI{T,AM}, x::VectorMPI{T,AV}) where {T,AM,AV}
     comm = MPI.COMM_WORLD
     rank = MPI.Comm_rank(comm)
     nranks = MPI.Comm_size(comm)
@@ -446,27 +472,33 @@ function DenseMatrixVectorPlan(A::MatrixMPI{T}, x::VectorMPI{T}) where T
     send_indices_final = [send_indices_map[r] for r in send_rank_ids]
     recv_perm_final = [recv_perm_map[r] for r in recv_rank_ids]
 
+    # MPI buffers are always on CPU
     send_bufs = [Vector{T}(undef, length(inds)) for inds in send_indices_final]
     recv_bufs = [Vector{T}(undef, send_counts[r+1]) for r in recv_rank_ids]
     send_reqs = Vector{MPI.Request}(undef, length(send_rank_ids))
     recv_reqs = Vector{MPI.Request}(undef, length(recv_rank_ids))
-    gathered = Vector{T}(undef, n_gathered)
 
-    return DenseMatrixVectorPlan{T}(
+    # CPU staging buffer (always needed for MPI)
+    gathered_cpu = Vector{T}(undef, n_gathered)
+
+    # Gathered buffer matches source vector's storage type
+    gathered = similar(x.v, n_gathered)
+
+    return DenseMatrixVectorPlan{T,AV}(
         send_rank_ids, send_indices_final, send_bufs, send_reqs,
         recv_rank_ids, recv_bufs, recv_reqs, recv_perm_final,
-        local_src_indices, local_dst_indices, gathered,
+        local_src_indices, local_dst_indices, gathered, gathered_cpu,
         nothing, nothing  # result_partition_hash, result_partition (computed lazily)
     )
 end
 
 """
-    execute_plan!(plan::DenseMatrixVectorPlan{T}, x::VectorMPI{T}) where T
+    execute_plan!(plan::DenseMatrixVectorPlan{T,Vector{T}}, x::VectorMPI{T,Vector{T}}) where T
 
-Execute a dense vector communication plan to gather elements from x.
+Execute a dense vector communication plan to gather elements from x (CPU path).
 Returns plan.gathered containing x[1:ncols] for the associated matrix.
 """
-function execute_plan!(plan::DenseMatrixVectorPlan{T}, x::VectorMPI{T}) where T
+function execute_plan!(plan::DenseMatrixVectorPlan{T,Vector{T}}, x::VectorMPI{T,Vector{T}}) where T
     comm = MPI.COMM_WORLD
 
     # Step 1: Copy local values
@@ -507,43 +539,116 @@ function execute_plan!(plan::DenseMatrixVectorPlan{T}, x::VectorMPI{T}) where T
 end
 
 """
-    get_dense_vector_plan(A::MatrixMPI{T}, x::VectorMPI{T}) where T
+    execute_plan!(plan::DenseMatrixVectorPlan{T,AV}, x::VectorMPI{T,AV}) where {T,AV}
+
+Execute a dense vector communication plan to gather elements from x (GPU path with CPU staging).
+Returns plan.gathered containing x[1:ncols] for the associated matrix.
+
+For GPU vectors, data is staged through CPU buffers for MPI communication.
+"""
+function execute_plan!(plan::DenseMatrixVectorPlan{T,AV}, x::VectorMPI{T,AV}) where {T,AV<:AbstractVector{T}}
+    # For non-Vector types (GPU arrays), use CPU staging
+    comm = MPI.COMM_WORLD
+
+    # Get CPU view of GPU data for sending
+    x_cpu = Array(x.v)
+
+    # Step 1: Copy local values to CPU staging buffer
+    @inbounds for i in eachindex(plan.local_src_indices, plan.local_dst_indices)
+        plan.gathered_cpu[plan.local_dst_indices[i]] = x_cpu[plan.local_src_indices[i]]
+    end
+
+    # Step 2: Fill send buffers from CPU data and send
+    @inbounds for i in eachindex(plan.send_rank_ids)
+        r = plan.send_rank_ids[i]
+        send_idx = plan.send_indices[i]
+        buf = plan.send_bufs[i]
+        for k in eachindex(send_idx)
+            buf[k] = x_cpu[send_idx[k]]
+        end
+        plan.send_reqs[i] = MPI.Isend(buf, comm; dest=r, tag=31)
+    end
+
+    # Step 3: Receive values to CPU buffers
+    @inbounds for i in eachindex(plan.recv_rank_ids)
+        plan.recv_reqs[i] = MPI.Irecv!(plan.recv_bufs[i], comm; source=plan.recv_rank_ids[i], tag=31)
+    end
+
+    MPI.Waitall(plan.recv_reqs)
+
+    # Step 4: Scatter received values into CPU staging buffer
+    @inbounds for i in eachindex(plan.recv_rank_ids)
+        perm = plan.recv_perm[i]
+        buf = plan.recv_bufs[i]
+        for k in eachindex(perm)
+            plan.gathered_cpu[perm[k]] = buf[k]
+        end
+    end
+
+    MPI.Waitall(plan.send_reqs)
+
+    # Step 5: Copy CPU staging buffer to GPU gathered buffer
+    copyto!(plan.gathered, plan.gathered_cpu)
+
+    return plan.gathered
+end
+
+"""
+    get_dense_vector_plan(A::MatrixMPI{T,AM}, x::VectorMPI{T,AV}) where {T,AM,AV}
 
 Get a memoized DenseMatrixVectorPlan for A * x.
-The plan is cached based on the structural hashes of A and x.
+The plan is cached based on the structural hashes of A and x, plus the array types.
 """
-function get_dense_vector_plan(A::MatrixMPI{T}, x::VectorMPI{T}) where T
-    key = (_ensure_hash(A), x.structural_hash, T)
+function get_dense_vector_plan(A::MatrixMPI{T,AM}, x::VectorMPI{T,AV}) where {T,AM,AV}
+    key = (_ensure_hash(A), x.structural_hash, T, AM, AV)
     if haskey(_dense_vector_plan_cache, key)
-        return _dense_vector_plan_cache[key]::DenseMatrixVectorPlan{T}
+        return _dense_vector_plan_cache[key]::DenseMatrixVectorPlan{T,AV}
     end
     plan = DenseMatrixVectorPlan(A, x)
     _dense_vector_plan_cache[key] = plan
     return plan
 end
 
+# Helper to get CPU buffer for dense multiply (dense matrices stay on CPU until GPU BLAS available)
+_dense_gathered_cpu_buffer(plan::DenseMatrixVectorPlan{T,Vector{T}}) where T = plan.gathered
+_dense_gathered_cpu_buffer(plan::DenseMatrixVectorPlan{T,AV}) where {T,AV} = plan.gathered_cpu
+
 """
-    LinearAlgebra.mul!(y::VectorMPI{T}, A::MatrixMPI{T}, x::VectorMPI{T}) where T
+    LinearAlgebra.mul!(y::VectorMPI{T,AV}, A::MatrixMPI{T,AM}, x::VectorMPI{T,AV}) where {T,AM,AV}
 
 In-place dense matrix-vector multiplication: y = A * x.
-"""
-function LinearAlgebra.mul!(y::VectorMPI{T}, A::MatrixMPI{T}, x::VectorMPI{T}) where T
-    plan = get_dense_vector_plan(A, x)
-    gathered = execute_plan!(plan, x)
 
-    # Local computation: y.v = A.A * gathered
-    # A.A has shape (local_nrows, ncols), gathered has shape (ncols,)
-    LinearAlgebra.mul!(y.v, A.A, gathered)
+For GPU vectors with CPU matrices, the multiply is performed on CPU and the result is copied to y.v.
+For GPU vectors with GPU matrices, the multiply uses GPU BLAS.
+"""
+function LinearAlgebra.mul!(y::VectorMPI{T,AV}, A::MatrixMPI{T,AM}, x::VectorMPI{T,AV}) where {T,AM,AV}
+    plan = get_dense_vector_plan(A, x)
+    execute_plan!(plan, x)
+
+    # Check if matrix is on GPU
+    if AM <: Matrix
+        # Matrix is on CPU - use CPU buffer for multiply
+        gathered_cpu = _dense_gathered_cpu_buffer(plan)
+        y_local_cpu = Vector{T}(undef, length(y.v))
+        LinearAlgebra.mul!(y_local_cpu, A.A, gathered_cpu)
+        copyto!(y.v, y_local_cpu)
+    else
+        # Matrix is on GPU - use GPU gathered buffer directly
+        LinearAlgebra.mul!(y.v, A.A, plan.gathered)
+    end
     return y
 end
 
 """
-    Base.:*(A::MatrixMPI{T}, x::VectorMPI{T}) where T
+    Base.:*(A::MatrixMPI{T,AM}, x::VectorMPI{T,AV}) where {T,AM,AV}
 
 Dense matrix-vector multiplication returning a new VectorMPI.
-The result has the same row partition as A.
+The result has the same row partition as A and same storage type as x.
+
+For GPU vectors with CPU matrices, the multiply is performed on CPU and
+the result is copied to GPU storage.
 """
-function Base.:*(A::MatrixMPI{T}, x::VectorMPI{T}) where T
+function Base.:*(A::MatrixMPI{T,AM}, x::VectorMPI{T,AV}) where {T,AM,AV}
     rank = MPI.Comm_rank(MPI.COMM_WORLD)
     local_rows = A.row_partition[rank + 2] - A.row_partition[rank + 1]
 
@@ -554,17 +659,30 @@ function Base.:*(A::MatrixMPI{T}, x::VectorMPI{T}) where T
         plan.result_partition = copy(A.row_partition)
     end
 
-    y = VectorMPI{T}(
+    # Execute the plan to gather vector elements
+    execute_plan!(plan, x)
+
+    # Check if matrix is on GPU
+    if AM <: Matrix
+        # Matrix is on CPU - compute on CPU, then copy to GPU if needed
+        gathered_cpu = _dense_gathered_cpu_buffer(plan)
+        y_local_cpu = Vector{T}(undef, local_rows)
+        LinearAlgebra.mul!(y_local_cpu, A.A, gathered_cpu)
+        y_v = _create_output_like(x.v, y_local_cpu)
+    else
+        # Matrix is on GPU - use GPU gathered buffer directly
+        y_v = similar(A.A, local_rows)
+        LinearAlgebra.mul!(y_v, A.A, plan.gathered)
+    end
+
+    return VectorMPI{T,AV}(
         plan.result_partition_hash,
         plan.result_partition,  # Partition is immutable, no need to copy
-        Vector{T}(undef, local_rows)
+        y_v
     )
-
-    # Execute the plan directly since we already have it
-    gathered = execute_plan!(plan, x)
-    LinearAlgebra.mul!(y.v, A.A, gathered)
-    return y
 end
+
+# Note: _create_output_like is defined in vectors.jl (loaded first)
 
 # Dense transpose plan
 
@@ -850,30 +968,30 @@ Return a lazy transpose wrapper around A.
 Base.transpose(A::MatrixMPI{T}) where T = Transpose(A)
 
 """
-    Base.conj(A::MatrixMPI{T}) where T
+    Base.conj(A::MatrixMPI{T,AM}) where {T,AM}
 
 Return a new MatrixMPI with conjugated values.
 """
-function Base.conj(A::MatrixMPI{T}) where T
-    return MatrixMPI{T}(A.structural_hash, A.row_partition, A.col_partition, conj.(A.A))
+function Base.conj(A::MatrixMPI{T,AM}) where {T,AM}
+    return MatrixMPI{T,AM}(A.structural_hash, A.row_partition, A.col_partition, conj.(A.A))
 end
 
 """
-    Base.adjoint(A::MatrixMPI{T}) where T
+    Base.adjoint(A::MatrixMPI{T,AM}) where {T,AM}
 
 Return transpose(conj(A)), i.e., the conjugate transpose.
 """
-Base.adjoint(A::MatrixMPI{T}) where T = transpose(conj(A))
+Base.adjoint(A::MatrixMPI{T,AM}) where {T,AM} = transpose(conj(A))
 
-# Type alias for transpose of MatrixMPI
-const TransposedMatrixMPI{T} = Transpose{T,MatrixMPI{T}}
+# Type alias for transpose of MatrixMPI (matches any AM)
+const TransposedMatrixMPI{T,AM} = Transpose{T,MatrixMPI{T,AM}}
 
 """
-    LinearAlgebra.copy(At::Transpose{T,MatrixMPI{T}}) where T
+    LinearAlgebra.copy(At::Transpose{T,<:MatrixMPI{T}}) where T
 
 Materialize a transposed MatrixMPI.
 """
-function LinearAlgebra.copy(At::Transpose{T,MatrixMPI{T}}) where T
+function LinearAlgebra.copy(At::Transpose{T,<:MatrixMPI{T}}) where T
     A = At.parent
     plan = get_dense_transpose_plan(A)
     return execute_plan!(plan, A)
@@ -882,7 +1000,7 @@ end
 # transpose(A) * x for MatrixMPI
 
 """
-    DenseTransposeVectorPlan{T}
+    DenseTransposeVectorPlan{T,AV}
 
 A communication plan for computing transpose(A) * x where A is MatrixMPI.
 
@@ -890,33 +1008,39 @@ For transpose(A) * x:
 - We need to gather x[1:nrows] according to A's row_partition
 - Then compute transpose(A.A) * gathered_x locally
 - Result has A.col_partition
+
+# Type Parameters
+- `T`: Element type
+- `AV<:AbstractVector{T}`: Storage type for gathered buffer (matches input VectorMPI)
 """
-mutable struct DenseTransposeVectorPlan{T}
+mutable struct DenseTransposeVectorPlan{T,AV<:AbstractVector{T}}
     send_rank_ids::Vector{Int}
     send_indices::Vector{Vector{Int}}
-    send_bufs::Vector{Vector{T}}
+    send_bufs::Vector{Vector{T}}      # Always CPU for MPI
     send_reqs::Vector{MPI.Request}
     recv_rank_ids::Vector{Int}
-    recv_bufs::Vector{Vector{T}}
+    recv_bufs::Vector{Vector{T}}      # Always CPU for MPI
     recv_reqs::Vector{MPI.Request}
     recv_perm::Vector{Vector{Int}}
     local_src_indices::Vector{Int}
     local_dst_indices::Vector{Int}
-    gathered::Vector{T}
+    gathered::AV                       # Same type as input vector
+    gathered_cpu::Vector{T}            # CPU staging buffer
     # Cached partition hash for result vector (computed lazily on first use)
     result_partition_hash::OptionalBlake3Hash
     result_partition::Union{Nothing, Vector{Int}}
 end
 
-# Cache for DenseTransposeVectorPlans
-const _dense_transpose_vector_plan_cache = Dict{Tuple{Blake3Hash,Blake3Hash,DataType},Any}()
+# Cache for DenseTransposeVectorPlans (includes AV type in key)
+const _dense_transpose_vector_plan_cache = Dict{Tuple{Blake3Hash,Blake3Hash,DataType,DataType},Any}()
 
 """
-    DenseTransposeVectorPlan(A::MatrixMPI{T}, x::VectorMPI{T}) where T
+    DenseTransposeVectorPlan(A::MatrixMPI{T}, x::VectorMPI{T,AV}) where {T,AV}
 
 Create a plan to gather x elements according to A's row_partition for transpose(A) * x.
+The gathered buffer has the same storage type as x (CPU or GPU).
 """
-function DenseTransposeVectorPlan(A::MatrixMPI{T}, x::VectorMPI{T}) where T
+function DenseTransposeVectorPlan(A::MatrixMPI{T}, x::VectorMPI{T,AV}) where {T,AV}
     comm = MPI.COMM_WORLD
     rank = MPI.Comm_rank(comm)
     nranks = MPI.Comm_size(comm)
@@ -1006,25 +1130,37 @@ function DenseTransposeVectorPlan(A::MatrixMPI{T}, x::VectorMPI{T}) where T
     recv_bufs = [Vector{T}(undef, send_counts[r+1]) for r in recv_rank_ids]
     send_reqs = Vector{MPI.Request}(undef, length(send_rank_ids))
     recv_reqs = Vector{MPI.Request}(undef, length(recv_rank_ids))
-    gathered = Vector{T}(undef, n_gathered)
 
-    return DenseTransposeVectorPlan{T}(
+    # Create gathered buffer with same type as input and CPU staging buffer
+    gathered_cpu = Vector{T}(undef, n_gathered)
+    gathered = similar(x.v, n_gathered)
+
+    return DenseTransposeVectorPlan{T,AV}(
         send_rank_ids, send_indices_final, send_bufs, send_reqs,
         recv_rank_ids, recv_bufs, recv_reqs, recv_perm_final,
-        local_src_indices, local_dst_indices, gathered,
+        local_src_indices, local_dst_indices, gathered, gathered_cpu,
         nothing, nothing  # result_partition_hash, result_partition (computed lazily)
     )
 end
 
-"""
-    execute_plan!(plan::DenseTransposeVectorPlan{T}, x::VectorMPI{T}) where T
+# Helper to get CPU buffer for DenseTransposeVectorPlan (may stage from GPU)
+function _transpose_gathered_cpu_buffer(plan::DenseTransposeVectorPlan{T,Vector{T}}) where T
+    return plan.gathered  # Already CPU
+end
 
-Execute the transpose vector plan to gather x elements.
+function _transpose_gathered_cpu_buffer(plan::DenseTransposeVectorPlan{T,AV}) where {T,AV<:AbstractVector{T}}
+    return plan.gathered_cpu  # Return CPU staging buffer for GPU arrays
+end
+
 """
-function execute_plan!(plan::DenseTransposeVectorPlan{T}, x::VectorMPI{T}) where T
+    execute_plan!(plan::DenseTransposeVectorPlan{T,Vector{T}}, x::VectorMPI{T,Vector{T}}) where T
+
+Execute the transpose vector plan for CPU vectors - direct copy, no staging.
+"""
+function execute_plan!(plan::DenseTransposeVectorPlan{T,Vector{T}}, x::VectorMPI{T,Vector{T}}) where T
     comm = MPI.COMM_WORLD
 
-    # Copy local values
+    # Copy local values directly
     @inbounds for i in eachindex(plan.local_src_indices, plan.local_dst_indices)
         plan.gathered[plan.local_dst_indices[i]] = x.v[plan.local_src_indices[i]]
     end
@@ -1062,14 +1198,66 @@ function execute_plan!(plan::DenseTransposeVectorPlan{T}, x::VectorMPI{T}) where
 end
 
 """
-    get_dense_transpose_vector_plan(A::MatrixMPI{T}, x::VectorMPI{T}) where T
+    execute_plan!(plan::DenseTransposeVectorPlan{T,AV}, x::VectorMPI{T,AV}) where {T,AV}
+
+Execute the transpose vector plan for GPU vectors - uses CPU staging.
+"""
+function execute_plan!(plan::DenseTransposeVectorPlan{T,AV}, x::VectorMPI{T,AV}) where {T,AV<:AbstractVector{T}}
+    comm = MPI.COMM_WORLD
+
+    # Copy GPU data to CPU for MPI operations
+    x_cpu = Array(x.v)
+
+    # Copy local values to CPU staging buffer
+    @inbounds for i in eachindex(plan.local_src_indices, plan.local_dst_indices)
+        plan.gathered_cpu[plan.local_dst_indices[i]] = x_cpu[plan.local_src_indices[i]]
+    end
+
+    # Fill send buffers from CPU copy and send
+    @inbounds for i in eachindex(plan.send_rank_ids)
+        r = plan.send_rank_ids[i]
+        send_idx = plan.send_indices[i]
+        buf = plan.send_bufs[i]
+        for k in eachindex(send_idx)
+            buf[k] = x_cpu[send_idx[k]]
+        end
+        plan.send_reqs[i] = MPI.Isend(buf, comm; dest=r, tag=51)
+    end
+
+    # Receive values
+    @inbounds for i in eachindex(plan.recv_rank_ids)
+        plan.recv_reqs[i] = MPI.Irecv!(plan.recv_bufs[i], comm; source=plan.recv_rank_ids[i], tag=51)
+    end
+
+    MPI.Waitall(plan.recv_reqs)
+
+    # Scatter received values into CPU staging buffer
+    @inbounds for i in eachindex(plan.recv_rank_ids)
+        perm = plan.recv_perm[i]
+        buf = plan.recv_bufs[i]
+        for k in eachindex(perm)
+            plan.gathered_cpu[perm[k]] = buf[k]
+        end
+    end
+
+    MPI.Waitall(plan.send_reqs)
+
+    # Copy CPU staging buffer to GPU buffer
+    copyto!(plan.gathered, plan.gathered_cpu)
+
+    return plan.gathered
+end
+
+"""
+    get_dense_transpose_vector_plan(A::MatrixMPI{T}, x::VectorMPI{T,AV}) where {T,AV}
 
 Get a memoized DenseTransposeVectorPlan for transpose(A) * x.
+Cache key includes array type for GPU/CPU separation.
 """
-function get_dense_transpose_vector_plan(A::MatrixMPI{T}, x::VectorMPI{T}) where T
-    key = (_ensure_hash(A), x.structural_hash, T)
+function get_dense_transpose_vector_plan(A::MatrixMPI{T}, x::VectorMPI{T,AV}) where {T,AV}
+    key = (_ensure_hash(A), x.structural_hash, T, AV)
     if haskey(_dense_transpose_vector_plan_cache, key)
-        return _dense_transpose_vector_plan_cache[key]::DenseTransposeVectorPlan{T}
+        return _dense_transpose_vector_plan_cache[key]::DenseTransposeVectorPlan{T,AV}
     end
     plan = DenseTransposeVectorPlan(A, x)
     _dense_transpose_vector_plan_cache[key] = plan
@@ -1077,11 +1265,12 @@ function get_dense_transpose_vector_plan(A::MatrixMPI{T}, x::VectorMPI{T}) where
 end
 
 """
-    Base.:*(At::Transpose{T,MatrixMPI{T}}, x::VectorMPI{T}) where T
+    Base.:*(At::Transpose{T,<:MatrixMPI{T}}, x::VectorMPI{T,AV}) where {T,AV}
 
 Compute transpose(A) * x without materializing the transpose.
+For GPU vectors, computation is done on CPU (matrix is on CPU) and result copied to GPU.
 """
-function Base.:*(At::Transpose{T,MatrixMPI{T}}, x::VectorMPI{T}) where T
+function Base.:*(At::Transpose{T,<:MatrixMPI{T}}, x::VectorMPI{T,AV}) where {T,AV}
     A = At.parent
     comm = MPI.COMM_WORLD
     rank = MPI.Comm_rank(comm)
@@ -1094,14 +1283,17 @@ function Base.:*(At::Transpose{T,MatrixMPI{T}}, x::VectorMPI{T}) where T
         plan.result_partition = copy(A.col_partition)
     end
 
-    gathered = execute_plan!(plan, x)
+    execute_plan!(plan, x)
+
+    # Use CPU buffer for computation (matrix is on CPU)
+    gathered_cpu = _transpose_gathered_cpu_buffer(plan)
 
     # Local computation: transpose(A.A) * local_gathered
     # A.A has shape (local_nrows, ncols), gathered has shape (nrows,)
     # We need gathered[my_row_start:my_row_end] for the local rows
     my_row_start = A.row_partition[rank+1]
     my_row_end = A.row_partition[rank+2] - 1
-    local_gathered = @view gathered[my_row_start:my_row_end]
+    local_gathered = @view gathered_cpu[my_row_start:my_row_end]
 
     # transpose(A.A) * local_gathered gives a full vector of size ncols
     # This is only the contribution from our local rows - need to sum across all ranks
@@ -1114,10 +1306,13 @@ function Base.:*(At::Transpose{T,MatrixMPI{T}}, x::VectorMPI{T}) where T
     # Extract our portion according to col_partition
     my_col_start = A.col_partition[rank+1]
     my_col_end = A.col_partition[rank+2] - 1
-    local_result = full_result[my_col_start:my_col_end]
+    local_result_cpu = full_result[my_col_start:my_col_end]
+
+    # Create output with same storage type as input
+    local_result = _create_output_like(x.v, local_result_cpu)
 
     # Create result vector (partition is immutable, no need to copy)
-    y = VectorMPI{T}(
+    y = VectorMPI{T,AV}(
         plan.result_partition_hash,
         plan.result_partition,
         local_result

@@ -14,6 +14,10 @@ export map_rows  # Row-wise map over distributed vectors/matrices
 export VectorMPI_local, MatrixMPI_local, SparseMatrixMPI_local  # Local constructors
 export mean  # Our mean function for SparseMatrixMPI and VectorMPI
 export io0   # Utility for rank-selective output
+export get_backend  # Get the KernelAbstractions backend for a distributed array
+
+# GPU conversion functions (extended by Metal/CUDA extensions)
+export mtl, cpu
 
 # Factorization exports (generic interface, implementation details hidden)
 export solve, solve!, finalize!, clear_mumps_analysis_cache!
@@ -109,10 +113,12 @@ end
 const _plan_cache = Dict{Tuple{Blake3Hash,Blake3Hash,DataType,DataType},Any}()
 
 # Cache for memoized VectorPlans (for A * x)
-const _vector_plan_cache = Dict{Tuple{Blake3Hash,Blake3Hash,DataType},Any}()
+# Key: (A_hash, x_hash, T, AV) - includes array type for GPU support
+const _vector_plan_cache = Dict{Tuple{Blake3Hash,Blake3Hash,DataType,DataType},Any}()
 
 # Cache for memoized DenseMatrixVectorPlans (for MatrixMPI * VectorMPI)
-const _dense_vector_plan_cache = Dict{Tuple{Blake3Hash,Blake3Hash,DataType},Any}()
+# Key: (A_hash, x_hash, T, AM, AV) - includes matrix and vector array types for GPU support
+const _dense_vector_plan_cache = Dict{Tuple{Blake3Hash,Blake3Hash,DataType,DataType,DataType},Any}()
 
 # Cache for memoized DenseTransposePlans (for transpose(MatrixMPI))
 const _dense_transpose_plan_cache = Dict{Tuple{Blake3Hash,DataType},Any}()
@@ -139,6 +145,25 @@ const _addition_plan_cache = Dict{Tuple{Blake3Hash,Blake3Hash,DataType,DataType}
 # Cache for memoized IdentityAdditionPlans (for A + λI)
 # Key: (A_hash, T, Ti) - use full 256-bit hash
 const _identity_addition_plan_cache = Dict{Tuple{Blake3Hash,DataType,DataType},Any}()
+
+# ============================================================================
+# GPU Conversion Functions (stubs - extended by Metal/CUDA extensions)
+# ============================================================================
+
+"""
+    mtl(v)
+
+Convert a distributed array to Metal GPU storage.
+Requires the Metal package to be loaded.
+"""
+function mtl end
+
+"""
+    cpu(v)
+
+Convert a distributed array from GPU to CPU storage.
+"""
+function cpu end
 
 """
     clear_plan_cache!()

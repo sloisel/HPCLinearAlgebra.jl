@@ -1,29 +1,50 @@
 # VectorMPI type and vector operations
 
+using Adapt
+using KernelAbstractions
+
 """
-    VectorMPI{T}
+    VectorMPI{T,AV}
 
 A distributed dense vector partitioned across MPI ranks.
 
+# Type Parameters
+- `T`: Element type (e.g., `Float64`, `ComplexF64`)
+- `AV<:AbstractVector{T}`: Storage type for local vector (e.g., `Vector{T}` or `MtlVector{T}`)
+
 # Fields
 - `structural_hash::Blake3Hash`: 256-bit Blake3 hash of the partition
-- `partition::Vector{Int}`: Partition boundaries, length = nranks + 1
-- `v::Vector{T}`: Local vector elements owned by this rank
+- `partition::Vector{Int}`: Partition boundaries, length = nranks + 1 (always on CPU)
+- `v::AV`: Local vector elements owned by this rank
 """
-struct VectorMPI{T} <: AbstractVector{T}
+struct VectorMPI{T,AV<:AbstractVector{T}} <: AbstractVector{T}
     structural_hash::Blake3Hash
     partition::Vector{Int}
-    v::Vector{T}
+    v::AV
+end
+
+# Type alias for CPU-backed VectorMPI (default, backwards compatible)
+const VectorMPI_CPU{T} = VectorMPI{T,Vector{T}}
+
+# Convenience constructor that infers AV from the vector type
+VectorMPI{T}(hash::Blake3Hash, partition::Vector{Int}, v::AV) where {T,AV<:AbstractVector{T}} =
+    VectorMPI{T,AV}(hash, partition, v)
+
+# Get the backend for a VectorMPI
+function get_backend(v::VectorMPI{T,AV}) where {T,AV}
+    return KernelAbstractions.get_backend(v.v)
 end
 
 """
-    VectorMPI_local(v_local::Vector{T}, comm::MPI.Comm=MPI.COMM_WORLD) where T
+    VectorMPI_local(v_local::AbstractVector{T}, comm::MPI.Comm=MPI.COMM_WORLD) where T
 
 Create a VectorMPI from a local vector on each rank.
 
 Unlike `VectorMPI(v_global)` which takes a global vector and partitions it,
 this constructor takes only the local portion of the vector that each rank owns.
 The partition is computed by gathering the local sizes from all ranks.
+
+The type of `v_local` determines the storage backend (CPU Vector, GPU MtlVector, etc.).
 
 # Example
 ```julia
@@ -33,7 +54,7 @@ v = VectorMPI_local([3.0, 4.0, 5.0])  # on rank 1
 # Result: distributed vector [1.0, 2.0, 3.0, 4.0, 5.0] with partition [1, 3, 6]
 ```
 """
-function VectorMPI_local(v_local::Vector{T}, comm::MPI.Comm=MPI.COMM_WORLD) where T
+function VectorMPI_local(v_local::AV, comm::MPI.Comm=MPI.COMM_WORLD) where {T, AV<:AbstractVector{T}}
     nranks = MPI.Comm_size(comm)
 
     # Gather local sizes from all ranks
@@ -48,7 +69,8 @@ function VectorMPI_local(v_local::Vector{T}, comm::MPI.Comm=MPI.COMM_WORLD) wher
     end
 
     hash = compute_partition_hash(partition)
-    return VectorMPI{T}(hash, partition, copy(v_local))
+    # Copy to preserve the same array type
+    return VectorMPI{T,AV}(hash, partition, copy(v_local))
 end
 
 """
@@ -67,6 +89,9 @@ Each rank extracts only its local portion from `v_global`, so:
 - `partition::Vector{Int}`: Partition boundaries (default: `uniform_partition(length(v_global), nranks)`)
 
 Use `uniform_partition(n, nranks)` to compute custom partitions.
+
+To create a GPU-backed VectorMPI, use `adapt(backend, v)` after creation,
+or use `VectorMPI_local` with a GPU array.
 """
 function VectorMPI(v_global::Vector{T};
                    comm::MPI.Comm=MPI.COMM_WORLD,
@@ -76,53 +101,77 @@ function VectorMPI(v_global::Vector{T};
     local_v = v_global[local_range]
 
     hash = compute_partition_hash(partition)
-    return VectorMPI{T}(hash, partition, local_v)
+    return VectorMPI{T,Vector{T}}(hash, partition, local_v)
 end
 
+# Adapt.jl support for converting VectorMPI between backends
+function Adapt.adapt_structure(to, v::VectorMPI{T,AV}) where {T,AV}
+    new_v = adapt(to, v.v)
+    return VectorMPI{T,typeof(new_v)}(v.structural_hash, v.partition, new_v)
+end
+
+# Helper to create output vector with same storage type as reference
+# Used by sparse and dense A*x operations
+_create_output_like(::Vector{T}, result::Vector{T}) where T = result
+_create_output_like(ref::AV, result::Vector{T}) where {T,AV<:AbstractVector{T}} =
+    copyto!(similar(ref, length(result)), result)
+
 """
-    VectorPlan{T}
+    VectorPlan{T,AV}
 
 A communication plan for gathering vector elements needed for A * x.
+
+# Type Parameters
+- `T`: Element type
+- `AV<:AbstractVector{T}`: Storage type for gathered buffer (matches input VectorMPI)
 
 # Fields
 - `send_rank_ids::Vector{Int}`: Ranks we send elements to (0-indexed)
 - `send_indices::Vector{Vector{Int}}`: For each rank, local indices to send
-- `send_bufs::Vector{Vector{T}}`: Pre-allocated send buffers
+- `send_bufs::Vector{Vector{T}}`: Pre-allocated CPU send buffers (for MPI)
 - `send_reqs::Vector{MPI.Request}`: Pre-allocated send request handles
 - `recv_rank_ids::Vector{Int}`: Ranks we receive elements from (0-indexed)
-- `recv_bufs::Vector{Vector{T}}`: Pre-allocated receive buffers
+- `recv_bufs::Vector{Vector{T}}`: Pre-allocated CPU receive buffers (for MPI)
 - `recv_reqs::Vector{MPI.Request}`: Pre-allocated receive request handles
 - `recv_perm::Vector{Vector{Int}}`: For each recv rank, indices into gathered
 - `local_src_indices::Vector{Int}`: Source indices for local copy (into x.v)
 - `local_dst_indices::Vector{Int}`: Destination indices for local copy (into gathered)
-- `gathered::Vector{T}`: Pre-allocated buffer for gathered elements
+- `gathered::AV`: Pre-allocated buffer for gathered elements (same type as input)
+- `gathered_cpu::Vector{T}`: CPU staging buffer (used when AV is GPU array)
 """
-mutable struct VectorPlan{T}
+mutable struct VectorPlan{T,AV<:AbstractVector{T}}
     send_rank_ids::Vector{Int}
     send_indices::Vector{Vector{Int}}
-    send_bufs::Vector{Vector{T}}
+    send_bufs::Vector{Vector{T}}      # Always CPU for MPI
     send_reqs::Vector{MPI.Request}
     recv_rank_ids::Vector{Int}
-    recv_bufs::Vector{Vector{T}}
+    recv_bufs::Vector{Vector{T}}      # Always CPU for MPI
     recv_reqs::Vector{MPI.Request}
     recv_perm::Vector{Vector{Int}}
     local_src_indices::Vector{Int}
     local_dst_indices::Vector{Int}
-    gathered::Vector{T}
+    gathered::AV                       # Same type as input vector
+    gathered_cpu::Vector{T}            # CPU staging buffer
     # Cached partition hash for result vector (computed lazily on first use)
     result_partition_hash::OptionalBlake3Hash
     result_partition::Union{Nothing, Vector{Int}}
 end
 
+# Type alias for CPU-backed VectorPlan (backwards compatible)
+const VectorPlan_CPU{T} = VectorPlan{T,Vector{T}}
+
 """
-    VectorPlan(target_partition::Vector{Int}, source::VectorMPI{T}) where T
+    VectorPlan(target_partition::Vector{Int}, source::VectorMPI{T,AV}) where {T,AV}
 
 Create a communication plan to gather elements from `source` according to `target_partition`.
 This allows binary operations between vectors with different partitions.
 
 After executing, `plan.gathered` contains `source[target_partition[rank+1]:target_partition[rank+2]-1]`.
+
+The gathered buffer will have the same storage type as the source vector (CPU or GPU).
+MPI communication always uses CPU staging buffers.
 """
-function VectorPlan(target_partition::Vector{Int}, source::VectorMPI{T}) where T
+function VectorPlan(target_partition::Vector{Int}, source::VectorMPI{T,AV}) where {T,AV}
     comm = MPI.COMM_WORLD
     rank = MPI.Comm_rank(comm)
     nranks = MPI.Comm_size(comm)
@@ -210,27 +259,34 @@ function VectorPlan(target_partition::Vector{Int}, source::VectorMPI{T}) where T
     send_indices_final = [send_indices_map[r] for r in send_rank_ids]
     recv_perm_final = [recv_perm_map[r] for r in recv_rank_ids]
 
+    # MPI buffers are always on CPU
     send_bufs = [Vector{T}(undef, length(inds)) for inds in send_indices_final]
     recv_bufs = [Vector{T}(undef, send_counts[r+1]) for r in recv_rank_ids]
     send_reqs = Vector{MPI.Request}(undef, length(send_rank_ids))
     recv_reqs = Vector{MPI.Request}(undef, length(recv_rank_ids))
-    gathered = Vector{T}(undef, n_gathered)
 
-    return VectorPlan{T}(
+    # CPU staging buffer (always needed for MPI)
+    gathered_cpu = Vector{T}(undef, n_gathered)
+
+    # Gathered buffer matches source vector's storage type
+    # Use similar() to create same type, or adapt for GPU arrays
+    gathered = similar(source.v, n_gathered)
+
+    return VectorPlan{T,AV}(
         send_rank_ids, send_indices_final, send_bufs, send_reqs,
         recv_rank_ids, recv_bufs, recv_reqs, recv_perm_final,
-        local_src_indices, local_dst_indices, gathered,
+        local_src_indices, local_dst_indices, gathered, gathered_cpu,
         nothing, nothing  # result_partition_hash, result_partition (computed lazily)
     )
 end
 
 """
-    execute_plan!(plan::VectorPlan{T}, x::VectorMPI{T}) where T
+    execute_plan!(plan::VectorPlan{T,Vector{T}}, x::VectorMPI{T,Vector{T}}) where T
 
-Execute a vector communication plan to gather elements from x.
+Execute a vector communication plan to gather elements from x (CPU path).
 Returns plan.gathered containing x[A.col_indices] for the associated matrix A.
 """
-function execute_plan!(plan::VectorPlan{T}, x::VectorMPI{T}) where T
+function execute_plan!(plan::VectorPlan{T,Vector{T}}, x::VectorMPI{T,Vector{T}}) where T
     comm = MPI.COMM_WORLD
 
     # Step 1: Copy local values (allocation-free loop)
@@ -266,6 +322,61 @@ function execute_plan!(plan::VectorPlan{T}, x::VectorMPI{T}) where T
     end
 
     MPI.Waitall(plan.send_reqs)
+
+    return plan.gathered
+end
+
+"""
+    execute_plan!(plan::VectorPlan{T,AV}, x::VectorMPI{T,AV}) where {T,AV}
+
+Execute a vector communication plan to gather elements from x (GPU path with CPU staging).
+Returns plan.gathered containing x[A.col_indices] for the associated matrix A.
+
+For GPU vectors, data is staged through CPU buffers for MPI communication.
+"""
+function execute_plan!(plan::VectorPlan{T,AV}, x::VectorMPI{T,AV}) where {T,AV<:AbstractVector{T}}
+    # For non-Vector types (GPU arrays), use CPU staging
+    comm = MPI.COMM_WORLD
+
+    # Get CPU view of GPU data for sending
+    x_cpu = Array(x.v)
+
+    # Step 1: Copy local values to CPU staging buffer
+    @inbounds for i in eachindex(plan.local_src_indices, plan.local_dst_indices)
+        plan.gathered_cpu[plan.local_dst_indices[i]] = x_cpu[plan.local_src_indices[i]]
+    end
+
+    # Step 2: Fill send buffers from CPU data and send
+    @inbounds for i in eachindex(plan.send_rank_ids)
+        r = plan.send_rank_ids[i]
+        send_idx = plan.send_indices[i]
+        buf = plan.send_bufs[i]
+        for k in eachindex(send_idx)
+            buf[k] = x_cpu[send_idx[k]]
+        end
+        plan.send_reqs[i] = MPI.Isend(buf, comm; dest=r, tag=21)
+    end
+
+    # Step 3: Receive values to CPU buffers
+    @inbounds for i in eachindex(plan.recv_rank_ids)
+        plan.recv_reqs[i] = MPI.Irecv!(plan.recv_bufs[i], comm; source=plan.recv_rank_ids[i], tag=21)
+    end
+
+    MPI.Waitall(plan.recv_reqs)
+
+    # Step 4: Scatter received values into CPU staging buffer
+    @inbounds for i in eachindex(plan.recv_rank_ids)
+        perm = plan.recv_perm[i]
+        buf = plan.recv_bufs[i]
+        for k in eachindex(perm)
+            plan.gathered_cpu[perm[k]] = buf[k]
+        end
+    end
+
+    MPI.Waitall(plan.send_reqs)
+
+    # Step 5: Copy CPU staging buffer to GPU gathered buffer
+    copyto!(plan.gathered, plan.gathered_cpu)
 
     return plan.gathered
 end
@@ -968,15 +1079,18 @@ _prepare_broadcast_arg(x, ref_partition, comm) = x
     Base.similar(bc::Broadcasted{VectorMPIStyle}, ::Type{ElType}) where ElType
 
 Allocate output array for VectorMPI broadcast.
+Preserves the storage type (CPU/GPU) of the first VectorMPI in the broadcast.
 """
 function Base.similar(bc::Broadcasted{VectorMPIStyle}, ::Type{ElType}) where ElType
-    # Find a VectorMPI to get partition info
+    # Find a VectorMPI to get partition info and array type
     v = _find_vectormpi(bc.args...)
     if v === nothing
         error("No VectorMPI found in broadcast arguments")
     end
-    # Create output with same partition (partition is immutable, no need to copy)
-    return VectorMPI{ElType}(v.structural_hash, v.partition, Vector{ElType}(undef, length(v.v)))
+    # Create output with same partition and storage type
+    # similar() preserves the array type (CPU Vector or GPU MtlVector)
+    new_v = similar(v.v, ElType, length(v.v))
+    return VectorMPI{ElType,typeof(new_v)}(v.structural_hash, v.partition, new_v)
 end
 
 """

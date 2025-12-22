@@ -1709,11 +1709,12 @@ SparseMatrixMPI(At::Transpose{T, SparseMatrixMPI{T,Ti}}) where {T,Ti} = SparseMa
 # VectorPlan constructor for sparse A * x (adds method to VectorPlan from vectors.jl)
 
 """
-    VectorPlan(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T}) where {T,Ti}
+    VectorPlan(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T,AV}) where {T,Ti,AV}
 
 Create a communication plan to gather x[A.col_indices] for matrix-vector multiplication.
+The gathered buffer will have the same storage type as the input vector x.
 """
-function VectorPlan(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T}) where {T,Ti}
+function VectorPlan(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T,AV}) where {T,Ti,AV}
     comm = MPI.COMM_WORLD
     rank = MPI.Comm_rank(comm)
     nranks = MPI.Comm_size(comm)
@@ -1799,30 +1800,36 @@ function VectorPlan(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T}) where {T,Ti}
     send_indices_final = [send_indices_map[r] for r in send_rank_ids]
     recv_perm_final = [recv_perm_map[r] for r in recv_rank_ids]
 
+    # MPI buffers are always on CPU
     send_bufs = [Vector{T}(undef, length(inds)) for inds in send_indices_final]
     recv_bufs = [Vector{T}(undef, send_counts[r+1]) for r in recv_rank_ids]
     send_reqs = Vector{MPI.Request}(undef, length(send_rank_ids))
     recv_reqs = Vector{MPI.Request}(undef, length(recv_rank_ids))
-    gathered = Vector{T}(undef, n_gathered)
 
-    return VectorPlan{T}(
+    # CPU staging buffer (always needed for MPI)
+    gathered_cpu = Vector{T}(undef, n_gathered)
+
+    # Gathered buffer matches source vector's storage type
+    gathered = similar(x.v, n_gathered)
+
+    return VectorPlan{T,AV}(
         send_rank_ids, send_indices_final, send_bufs, send_reqs,
         recv_rank_ids, recv_bufs, recv_reqs, recv_perm_final,
-        local_src_indices, local_dst_indices, gathered,
+        local_src_indices, local_dst_indices, gathered, gathered_cpu,
         nothing, nothing  # result_partition_hash, result_partition (computed lazily)
     )
 end
 
 """
-    get_vector_plan(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T}) where {T,Ti}
+    get_vector_plan(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T,AV}) where {T,Ti,AV}
 
 Get a memoized VectorPlan for A * x.
-The plan is cached based on the structural hashes of A and x.
+The plan is cached based on the structural hashes of A and x, plus the array type.
 """
-function get_vector_plan(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T}) where {T,Ti}
-    key = (_ensure_hash(A), x.structural_hash, T)
+function get_vector_plan(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T,AV}) where {T,Ti,AV}
+    key = (_ensure_hash(A), x.structural_hash, T, AV)
     if haskey(_vector_plan_cache, key)
-        return _vector_plan_cache[key]::VectorPlan{T}
+        return _vector_plan_cache[key]::VectorPlan{T,AV}
     end
     plan = VectorPlan(A, x)
     _vector_plan_cache[key] = plan
@@ -1832,7 +1839,7 @@ end
 # Matrix-vector multiplication
 
 """
-    LinearAlgebra.mul!(y::VectorMPI{T}, A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T}) where {T,Ti}
+    LinearAlgebra.mul!(y::VectorMPI{T,AV}, A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T,AV}) where {T,Ti,AV}
 
 In-place sparse matrix-vector multiplication: y = A * x.
 
@@ -1842,29 +1849,45 @@ The algorithm:
 
 A.A.parent is already compressed with local indices 1:length(A.col_indices),
 so gathered has length matching A.A.parent.m and can be used directly.
-"""
-function LinearAlgebra.mul!(y::VectorMPI{T}, A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T}) where {T,Ti}
-    comm = MPI.COMM_WORLD
 
+For GPU vectors, the multiply is performed on CPU and the result is copied to y.v.
+"""
+function LinearAlgebra.mul!(y::VectorMPI{T,AV}, A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T,AV}) where {T,Ti,AV}
     # Get memoized plan and execute it
     plan = get_vector_plan(A, x)
-    gathered = execute_plan!(plan, x)
+    execute_plan!(plan, x)
 
     # A.A.parent is already compressed with local indices 1:length(A.col_indices)
     # gathered has length length(A.col_indices), matching A.A.parent.m
     # y = A * x => y^T = x^T * A^T => y.v = transpose(A.A.parent) * gathered
     # Use transpose() not ' to avoid conjugation for complex types
-    LinearAlgebra.mul!(y.v, transpose(A.A.parent), gathered)
+
+    # Sparse matrix multiply uses CPU buffer (sparse matrix is on CPU)
+    gathered_cpu = _gathered_cpu_buffer(plan)
+    y_local_cpu = Vector{T}(undef, length(y.v))
+    LinearAlgebra.mul!(y_local_cpu, transpose(A.A.parent), gathered_cpu)
+
+    # Copy result to output (no-op for CPU, GPU copy for GPU)
+    copyto!(y.v, y_local_cpu)
     return y
 end
 
+# Helper to get CPU buffer for sparse multiply (sparse matrices stay on CPU until Phase 3)
+_gathered_cpu_buffer(plan::VectorPlan{T,Vector{T}}) where T = plan.gathered
+_gathered_cpu_buffer(plan::VectorPlan{T,AV}) where {T,AV} = plan.gathered_cpu
+
+# Note: _create_output_like is defined in vectors.jl (shared by sparse and dense)
+
 """
-    Base.:*(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T}) where {T,Ti}
+    Base.:*(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T,AV}) where {T,Ti,AV}
 
 Sparse matrix-vector multiplication returning a new VectorMPI.
-The result has the same row partition as A.
+The result has the same row partition as A and same storage type as x.
+
+For GPU vectors, the sparse multiply is performed on CPU (sparse matrices
+remain on CPU), and the result is copied to GPU storage.
 """
-function Base.:*(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T}) where {T,Ti}
+function Base.:*(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T,AV}) where {T,Ti,AV}
     rank = MPI.Comm_rank(MPI.COMM_WORLD)
     local_rows = A.row_partition[rank+2] - A.row_partition[rank+1]
 
@@ -1875,16 +1898,22 @@ function Base.:*(A::SparseMatrixMPI{T,Ti}, x::VectorMPI{T}) where {T,Ti}
         plan.result_partition = copy(A.row_partition)
     end
 
-    y = VectorMPI{T}(
+    # Execute the plan to gather vector elements
+    execute_plan!(plan, x)
+
+    # Sparse matrix multiply uses CPU buffer (sparse matrix is on CPU)
+    gathered_cpu = _gathered_cpu_buffer(plan)
+    y_local_cpu = Vector{T}(undef, local_rows)
+    LinearAlgebra.mul!(y_local_cpu, transpose(A.A.parent), gathered_cpu)
+
+    # Create output with same storage type as input
+    y_v = _create_output_like(x.v, y_local_cpu)
+
+    return VectorMPI{T,AV}(
         plan.result_partition_hash,
         plan.result_partition,  # Partition is immutable, no need to copy
-        Vector{T}(undef, local_rows)
+        y_v
     )
-
-    # Execute the plan directly since we already have it
-    gathered = execute_plan!(plan, x)
-    LinearAlgebra.mul!(y.v, transpose(A.A.parent), gathered)
-    return y
 end
 
 """
