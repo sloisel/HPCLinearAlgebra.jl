@@ -49,6 +49,42 @@ jobs:
         with:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
+          flags: ubuntu
+          fail_ci_if_error: false
+
+  test-macos:
+    name: Test (macOS/Metal)
+    runs-on: macos-14  # Apple Silicon with Metal GPU support
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MPI
+        run: brew install mpich
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.10'
+
+      - uses: julia-actions/cache@v2
+
+      - name: Build package
+        uses: julia-actions/julia-buildpkg@v1
+
+      - name: Run tests with coverage
+        uses: julia-actions/julia-runtest@v1
+        with:
+          coverage: true
+
+      - name: Process coverage
+        uses: julia-actions/julia-processcoverage@v1
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: macos-metal
           fail_ci_if_error: false
 
   docs:
