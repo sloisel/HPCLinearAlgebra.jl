@@ -10,11 +10,11 @@ LinearAlgebraMPI provides three distributed types:
 |------|-------------|---------|
 | `VectorMPI{T,AV}` | Distributed vector | Row-partitioned |
 | `MatrixMPI{T,AM}` | Distributed dense matrix | Row-partitioned |
-| `SparseMatrixMPI{T,Ti}` | Distributed sparse matrix | Row-partitioned CSR |
+| `SparseMatrixMPI{T,Ti,AV}` | Distributed sparse matrix | Row-partitioned CSR |
 
 The type parameters are:
 - `T`: Element type (`Float64`, `Float32`, `ComplexF64`, etc.)
-- `AV<:AbstractVector{T}`: Underlying storage for vectors (`Vector{T}` for CPU, `MtlVector{T}` for Metal GPU)
+- `AV<:AbstractVector{T}`: Underlying storage for vectors and sparse matrix values (`Vector{T}` for CPU, `MtlVector{T}` for Metal GPU)
 - `AM<:AbstractMatrix{T}`: Underlying storage for dense matrices (`Matrix{T}` for CPU, `MtlMatrix{T}` for Metal GPU)
 - `Ti`: Index type for sparse matrices (typically `Int`)
 

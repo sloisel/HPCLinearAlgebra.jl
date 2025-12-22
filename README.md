@@ -11,8 +11,8 @@ Distributed sparse matrix and vector operations using MPI for Julia. This packag
 
 ## Features
 
-- **Distributed sparse matrices** (`SparseMatrixMPI{T}`) with row-partitioning across MPI ranks
-- **Distributed dense vectors** (`VectorMPI{T}`) with flexible partitioning
+- **Distributed sparse matrices** (`SparseMatrixMPI{T,Ti,AV}`) with row-partitioning across MPI ranks
+- **Distributed dense vectors** (`VectorMPI{T,AV}`) with flexible partitioning
 - **Matrix-matrix multiplication** (`A * B`) with memoized communication plans
 - **Matrix-vector multiplication** (`A * x`, `mul!(y, A, x)`)
 - **Sparse direct solvers**: LU and LDLT factorization using MUMPS
@@ -106,7 +106,8 @@ v_gpu = VectorMPI_local(local_data)
 ### How it works
 
 - **Vectors**: `VectorMPI{T,AV}` where `AV` is `Vector{T}` (CPU) or `MtlVector{T}` (GPU)
-- **Matrices**: Currently remain on CPU; GPU vectors are staged through CPU for matrix operations
+- **Sparse matrices**: `SparseMatrixMPI{T,Ti,AV}` where `AV` determines storage for nonzero values
+- **Dense matrices**: `MatrixMPI{T,AM}` where `AM` is `Matrix{T}` (CPU) or `MtlMatrix{T}` (GPU)
 - **MPI communication**: Always uses CPU buffers (no Metal-aware MPI exists)
 - **Element type**: Metal requires `Float32` (no `Float64` support)
 

@@ -81,17 +81,19 @@ io0
 
 | Native Type | MPI Type | Description |
 |-------------|----------|-------------|
-| `Vector{T}` | `VectorMPI{T}` | Distributed vector |
-| `Matrix{T}` | `MatrixMPI{T}` | Distributed dense matrix |
-| `SparseMatrixCSC{T,Ti}` | `SparseMatrixMPI{T,Ti}` | Distributed sparse matrix |
+| `Vector{T}` | `VectorMPI{T,AV}` | Distributed vector |
+| `Matrix{T}` | `MatrixMPI{T,AM}` | Distributed dense matrix |
+| `SparseMatrixCSC{T,Ti}` | `SparseMatrixMPI{T,Ti,AV}` | Distributed sparse matrix |
+
+The `AV` and `AM` type parameters specify the underlying storage (`Vector{T}`/`Matrix{T}` for CPU, `MtlVector{T}`/`MtlMatrix{T}` for Metal GPU).
 
 ### MPI to Native Conversions
 
 | MPI Type | Native Type | Function |
 |----------|-------------|----------|
-| `VectorMPI{T}` | `Vector{T}` | `Vector(v)` |
-| `MatrixMPI{T}` | `Matrix{T}` | `Matrix(A)` |
-| `SparseMatrixMPI{T,Ti}` | `SparseMatrixCSC{T,Ti}` | `SparseMatrixCSC(A)` |
+| `VectorMPI{T,AV}` | `Vector{T}` | `Vector(v)` |
+| `MatrixMPI{T,AM}` | `Matrix{T}` | `Matrix(A)` |
+| `SparseMatrixMPI{T,Ti,AV}` | `SparseMatrixCSC{T,Ti}` | `SparseMatrixCSC(A)` |
 
 ## Supported Operations
 

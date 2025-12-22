@@ -22,8 +22,8 @@ mpiexec -n 4 julia --project=. test/test_local_constructors.jl
 mpiexec -n 4 julia --project=. test/test_indexing.jl
 mpiexec -n 4 julia --project=. test/test_factorization.jl
 
-# Run GPU tests (requires Metal.jl on macOS)
-mpiexec -n 2 julia --project=. test/test_gpu.jl
+# GPU tests run automatically when Metal.jl is available
+# Tests are parameterized over (scalar type, backend) configurations
 
 # Precompile the package
 julia --project=. -e 'using Pkg; Pkg.precompile()'
@@ -37,7 +37,8 @@ GPU acceleration is supported via Metal.jl (macOS) as a package extension.
 
 - `VectorMPI{T,AV}` where `AV` is `Vector{T}` (CPU) or `MtlVector{T}` (GPU)
 - `MatrixMPI{T,AM}` where `AM` is `Matrix{T}` (CPU) or `MtlMatrix{T}` (GPU)
-- Type aliases: `VectorMPI_CPU{T}`, `MatrixMPI_CPU{T}` for CPU-backed types
+- `SparseMatrixMPI{T,Ti,AV}` where `AV` is `Vector{T}` (CPU) or `MtlVector{T}` (GPU) for the `nzval` array
+- Type aliases: `VectorMPI_CPU{T}`, `MatrixMPI_CPU{T}`, `SparseMatrixMPI_CPU{T,Ti}` for CPU-backed types
 
 ### CPU Staging
 
@@ -88,18 +89,21 @@ Many operations in this module are collective and should not be run on a subset 
 - `SparseMatrixCSC(A::SparseMatrixCSR)` converts CSR to CSC representing the **same** matrix
 - For `B = SparseMatrixCSR(A)`, `B[i,j] == A[i,j]` (same matrix, different storage)
 
-**SparseMatrixMPI{T}**
+**SparseMatrixMPI{T,Ti,AV}**
 - Rows are partitioned across MPI ranks
-- `A::SparseMatrixCSR{T,Int}`: Local rows in CSR format for efficient row-wise iteration
-  - `A.parent` is the underlying CSC storage with shape `(length(col_indices), local_nrows)`
-  - `A.parent.colptr` acts as row pointers for the CSR format
-  - `A.parent.rowval` contains LOCAL column indices (1:length(col_indices)), not global
-  - Storage is **compressed** to avoid hypersparse issues
+- Type parameters: `T` = element type, `Ti` = index type, `AV` = array type for values (`Vector{T}` or `MtlVector{T}`)
+- Local rows stored in CSR-like format with separate arrays:
+  - `rowptr::Vector{Ti}` - row pointers (always CPU)
+  - `colval::Vector{Ti}` - LOCAL column indices (1:ncols_compressed, always CPU)
+  - `nzval::AV` - nonzero values (can be CPU or GPU)
+  - `nrows_local::Int` - number of local rows
+  - `ncols_compressed::Int` - = length(col_indices)
 - `row_partition`: Array of size `nranks + 1` defining which rows each rank owns (1-indexed boundaries)
 - `col_partition`: Array of size `nranks + 1` defining column partition (used for transpose operations)
 - `col_indices`: Sorted global column indices that appear in the local part (local→global mapping)
 - `structural_hash`: Optional Blake3 hash of the matrix structure (computed lazily via `_ensure_hash`)
 - `cached_transpose`: Cached materialized transpose (invalidated on modification)
+- `cached_symmetric`: Cached result of `issymmetric` check
 
 **MatrixMPI{T,AM}**
 - Distributed dense matrix partitioned by rows across MPI ranks
@@ -139,9 +143,11 @@ Many operations in this module are collective and should not be run on a subset 
 
 Factorization uses MUMPS (MUltifrontal Massively Parallel Solver) with distributed matrix input (ICNTL(18)=3).
 
-**MUMPSFactorizationMPI{T}** (internal type, not exported)
+**MUMPSFactorizationMPI{Tin, AVin, Tinternal}** (internal type, not exported)
 - Wraps a MUMPS object for distributed factorization
+- Type parameters: `Tin` = input element type, `AVin` = input array type, `Tinternal` = MUMPS-compatible type (Float64 or ComplexF64)
 - Created by `lu(A)` for general matrices or `ldlt(A)` for symmetric matrices
+- Automatically converts input to MUMPS-compatible types and back (e.g., Float32 GPU → Float64 CPU → solve → Float32 GPU)
 - Stores COO arrays (irn_loc, jcn_loc, a_loc) to prevent GC while MUMPS holds pointers
 
 ```julia
@@ -179,7 +185,7 @@ For `y = A * x` where `A::SparseMatrixMPI` and `x::VectorMPI`:
 
 1. **Plan creation** (`VectorPlan` constructor): Uses `Alltoall` to exchange element request counts, then point-to-point to exchange indices
 2. **Value exchange** (`execute_plan!`): Point-to-point `Isend`/`Irecv` to gather `x[A.col_indices]` into a local `gathered` vector
-3. **Local computation**: Compute `transpose(A.A.parent) * gathered` (A.A.parent already uses local indices)
+3. **Local computation**: Compute `transpose(_get_csc(A)) * gathered` where `_get_csc(A)` reconstructs a SparseMatrixCSC from the internal CSR arrays
 4. **Result construction**: Result vector `y` inherits `A.row_partition`
 
 Note: Uses `transpose()` (not adjoint `'`) to correctly handle complex values without conjugation.
@@ -195,7 +201,7 @@ Note: Uses `transpose()` (not adjoint `'`) to correctly handle complex values wi
 
 ### Lazy Transpose
 
-`transpose(A)` returns `Transpose{T, SparseMatrixMPI{T}}` (lazy wrapper). Materialization happens automatically when needed:
+`transpose(A)` returns `Transpose{T, SparseMatrixMPI{T,Ti,AV}}` (lazy wrapper). Materialization happens automatically when needed:
 - `transpose(A) * transpose(B)` → `transpose(B * A)` (stays lazy)
 - `transpose(A) * B` or `A * transpose(B)` → materializes via `TransposePlan`
 - `SparseMatrixMPI(transpose(A))` → explicitly materialize the transpose (cached bidirectionally)
