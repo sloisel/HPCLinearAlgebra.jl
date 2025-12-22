@@ -371,18 +371,23 @@ function _convert_to_mumps_compatible(A::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,A
 
     # Create new SparseMatrixMPI with converted type (CPU Vector)
     # Structural arrays (rowptr, colval, col_indices) stay the same
+    new_rowptr = copy(A.rowptr)
+    new_colval = copy(A.colval)
+    # For CPU, rowptr_target and colval_target are the same as rowptr and colval
     return SparseMatrixMPI{Tinternal,Ti,Vector{Tinternal}}(
         A.structural_hash,
         copy(A.row_partition),
         copy(A.col_partition),
         copy(A.col_indices),
-        copy(A.rowptr),
-        copy(A.colval),
+        new_rowptr,
+        new_colval,
         nzval_converted,
         A.nrows_local,
         A.ncols_compressed,
         nothing,  # Don't copy cached transpose
-        A.cached_symmetric
+        A.cached_symmetric,
+        new_rowptr,  # rowptr_target (same as rowptr for CPU)
+        new_colval   # colval_target (same as colval for CPU)
     )
 end
 

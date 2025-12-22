@@ -41,11 +41,14 @@ const MtlSparseMatrixMPI{T,Ti} = LinearAlgebraMPI.SparseMatrixMPI{T,Ti,MtlVector
     mtl(A::LinearAlgebraMPI.SparseMatrixMPI)
 
 Convert a CPU SparseMatrixMPI to a Metal GPU SparseMatrixMPI.
-Only the nonzero values (`nzval`) are moved to GPU. Structural arrays
-(`rowptr`, `colval`, partitions) remain on CPU.
+The `nzval` and target structure arrays are moved to GPU.
+The CPU structure arrays (`rowptr`, `colval`, partitions) remain on CPU for MPI.
 """
 function LinearAlgebraMPI.mtl(A::LinearAlgebraMPI.SparseMatrixMPI{T,Ti,Vector{T}}) where {T,Ti}
     nzval_gpu = MtlVector(A.nzval)
+    # Convert structure arrays to GPU (used by unified SpMV kernel)
+    rowptr_target = MtlVector(A.rowptr)
+    colval_target = MtlVector(A.colval)
     return LinearAlgebraMPI.SparseMatrixMPI{T,Ti,MtlVector{T}}(
         A.structural_hash,
         A.row_partition,
@@ -57,7 +60,9 @@ function LinearAlgebraMPI.mtl(A::LinearAlgebraMPI.SparseMatrixMPI{T,Ti,Vector{T}
         A.nrows_local,
         A.ncols_compressed,
         nothing,  # Invalidate cached_transpose (would need to convert too)
-        A.cached_symmetric
+        A.cached_symmetric,
+        rowptr_target,
+        colval_target
     )
 end
 
@@ -68,6 +73,7 @@ Convert a Metal GPU SparseMatrixMPI to a CPU SparseMatrixMPI.
 """
 function LinearAlgebraMPI.cpu(A::LinearAlgebraMPI.SparseMatrixMPI{T,Ti,<:MtlVector}) where {T,Ti}
     nzval_cpu = Array(A.nzval)
+    # For CPU, rowptr_target and colval_target are the same as rowptr and colval
     return LinearAlgebraMPI.SparseMatrixMPI{T,Ti,Vector{T}}(
         A.structural_hash,
         A.row_partition,
@@ -79,7 +85,9 @@ function LinearAlgebraMPI.cpu(A::LinearAlgebraMPI.SparseMatrixMPI{T,Ti,<:MtlVect
         A.nrows_local,
         A.ncols_compressed,
         nothing,  # Invalidate cached_transpose
-        A.cached_symmetric
+        A.cached_symmetric,
+        A.rowptr,  # rowptr_target (same as rowptr for CPU)
+        A.colval   # colval_target (same as colval for CPU)
     )
 end
 
@@ -139,5 +147,25 @@ Used by MUMPS factorization to reconstruct GPU output vectors.
 function LinearAlgebraMPI._create_output_like(v::LinearAlgebraMPI.VectorMPI{T,<:Vector}, ::Type{<:MtlVector}) where T
     return LinearAlgebraMPI.mtl(v)
 end
+
+# ============================================================================
+# MatrixPlan Index Array Support
+# ============================================================================
+
+"""
+    _index_array_type(::Type{MtlVector{T}}, ::Type{Ti}) where {T,Ti}
+
+Map MtlVector{T} value array type to MtlVector{Ti} index array type.
+Used by MatrixPlan to store symbolic index arrays on GPU.
+"""
+LinearAlgebraMPI._index_array_type(::Type{MtlVector{T}}, ::Type{Ti}) where {T,Ti} = MtlVector{Ti}
+
+"""
+    _to_target_backend(v::Vector{Ti}, ::Type{MtlVector{T}}) where {Ti,T}
+
+Convert a CPU index vector to Metal GPU.
+Used by SparseMatrixMPI constructors to create GPU structure arrays.
+"""
+LinearAlgebraMPI._to_target_backend(v::Vector{Ti}, ::Type{<:MtlVector}) where {Ti} = MtlVector(v)
 
 end # module

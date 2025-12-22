@@ -109,8 +109,8 @@ function SparseArrays.SparseMatrixCSC(A::SparseMatrixCSR{Tv,Ti}) where {Tv,Ti}
 end
 
 # Cache for memoized MatrixPlans
-# Key: (A_hash, B_hash, T, Ti) - use full 256-bit hashes
-const _plan_cache = Dict{Tuple{Blake3Hash,Blake3Hash,DataType,DataType},Any}()
+# Key: (A_hash, B_hash, T, Ti, AV) - use full 256-bit hashes, includes array type for GPU support
+const _plan_cache = Dict{Tuple{Blake3Hash,Blake3Hash,DataType,DataType,Type},Any}()
 
 # Cache for memoized VectorPlans (for A * x)
 # Key: (A_hash, x_hash, T, AV) - includes array type for GPU support
@@ -141,8 +141,8 @@ end
 const _diag_structure_cache = Dict{Blake3Hash,DiagStructureCache}()
 
 # Cache for memoized AdditionPlans (for A + B and A - B)
-# Key: (A_hash, B_hash, T, Ti) - use full 256-bit hashes
-const _addition_plan_cache = Dict{Tuple{Blake3Hash,Blake3Hash,DataType,DataType},Any}()
+# Key: (A_hash, B_hash, T, Ti, AV) - use full 256-bit hashes, includes array type for GPU support
+const _addition_plan_cache = Dict{Tuple{Blake3Hash,Blake3Hash,DataType,DataType,Type},Any}()
 
 # Cache for memoized IdentityAdditionPlans (for A + λI)
 # Key: (A_hash, T, Ti) - use full 256-bit hash

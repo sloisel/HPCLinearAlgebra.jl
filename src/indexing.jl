@@ -1049,9 +1049,10 @@ function Base.getindex(A::SparseMatrixMPI{T,Ti}, row_rng::UnitRange{Int}, col_rn
         # SparseMatrixCSC(ncols, nrows, colptr, rowval, nzval) - transposed storage
         empty_AT = SparseMatrixCSC(new_ncols, my_local_rows, ones(Int, my_local_rows + 1), Int[], T[])
         hash = compute_structural_hash(new_row_partition, Int[], empty_AT, comm)
+        # For CPU, rowptr_target and colval_target are the same as rowptr and colval
         return SparseMatrixMPI{T,Ti,Vector{T}}(hash, new_row_partition, new_col_partition, Int[],
                                    empty_AT.colptr, empty_AT.rowval, empty_AT.nzval,
-                                   my_local_rows, 0, nothing, nothing)
+                                   my_local_rows, 0, nothing, nothing, empty_AT.colptr, empty_AT.rowval)
     end
 
     # Compute new row partition (local computation, no communication)
@@ -1161,9 +1162,10 @@ function Base.getindex(A::SparseMatrixMPI{T,Ti}, row_rng::UnitRange{Int}, col_rn
     hash = compute_structural_hash(new_row_partition, final_col_indices, new_AT.colptr, new_AT.rowval, comm)
 
     # Use explicit CSR arrays for the new struct format
+    # For CPU, rowptr_target and colval_target are the same as rowptr and colval
     return SparseMatrixMPI{T,Ti,Vector{T}}(hash, new_row_partition, new_col_partition, final_col_indices,
                                new_AT.colptr, new_AT.rowval, new_AT.nzval, local_nrows,
-                               length(final_col_indices), nothing, nothing)
+                               length(final_col_indices), nothing, nothing, new_AT.colptr, new_AT.rowval)
 end
 
 # Convenience: A[row_rng, :] - all columns

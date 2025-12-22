@@ -320,13 +320,18 @@ mutable struct SparseMatrixMPI{T,Ti,AV<:AbstractVector{T}} <: AbstractMatrix{T}
     row_partition::Vector{Int}      # Always CPU
     col_partition::Vector{Int}      # Always CPU
     col_indices::Vector{Int}        # Always CPU (local→global column mapping)
-    rowptr::Vector{Ti}              # Always CPU - row pointers
-    colval::Vector{Ti}              # Always CPU - LOCAL column indices (1:ncols_compressed)
+    rowptr::Vector{Ti}              # Always CPU - row pointers (for MPI operations)
+    colval::Vector{Ti}              # Always CPU - LOCAL column indices (for MPI operations)
     nzval::AV                       # CPU or GPU - nonzero values
     nrows_local::Int                # Number of local rows
     ncols_compressed::Int           # = length(col_indices)
     cached_transpose::Union{Nothing,SparseMatrixMPI{T,Ti,AV}}
     cached_symmetric::Union{Nothing,Bool}  # Cache for issymmetric result
+    # Structure arrays on target backend (same backend as nzval)
+    # For CPU: these are the same objects as rowptr/colval
+    # For GPU: these are GPU copies
+    rowptr_target::AbstractVector{Ti}
+    colval_target::AbstractVector{Ti}
 end
 
 # Type alias for CPU version (backwards compatibility)
@@ -473,8 +478,9 @@ function SparseMatrixMPI_local(A_local::SparseMatrixCSR{T,Ti};
     ncols_compressed = length(col_indices)
 
     # Structural hash computed lazily on first use via _ensure_hash
+    # For CPU matrices, rowptr_target and colval_target are the same objects as rowptr/colval
     return SparseMatrixMPI{T,Ti,Vector{T}}(nothing, row_partition, col_partition, col_indices,
-        rowptr, colval, nzval, nrows_local, ncols_compressed, nothing, nothing)
+        rowptr, colval, nzval, nrows_local, ncols_compressed, nothing, nothing, rowptr, colval)
 end
 
 # Adjoint version: conjugate values during construction
@@ -505,7 +511,7 @@ A communication plan for gathering rows from an SparseMatrixMPI.
 - `local_ranges::Vector{Tuple{UnitRange{Int}, Int}}`: (src_range, dst_offset) for local copies
 - `AT::SparseMatrixCSC{T,Ti}`: Transposed matrix structure for gathered rows (values zeroed)
 """
-mutable struct MatrixPlan{T,Ti}
+mutable struct MatrixPlan{T,Ti,AIV<:AbstractVector{Ti}}
     rank_ids::Vector{Int}
     send_ranges::Vector{Vector{UnitRange{Int}}}
     send_bufs::Vector{Vector{T}}
@@ -526,26 +532,28 @@ mutable struct MatrixPlan{T,Ti}
     # C.nzval[Ci[k]] += plan.AT.nzval[Ai[k]] * A.nzval[Bi[k]]
     # Arrays are partitioned into layers where Ci values don't repeat within a layer,
     # allowing parallel execution without atomics.
-    sym_Ai::Union{Nothing, Vector{Ti}}  # indices into plan.AT.nzval
-    sym_Bi::Union{Nothing, Vector{Ti}}  # indices into A.nzval
-    sym_Ci::Union{Nothing, Vector{Ti}}  # indices into result.nzval
-    sym_layer_starts::Union{Nothing, Vector{Ti}}  # layer_starts[l] = first index of layer l
-    sym_colptr::Union{Nothing, Vector{Ti}}  # colptr for result
-    sym_rowval::Union{Nothing, Vector{Ti}}  # rowval for result (compressed local indices)
+    # AIV is the index array type (Vector{Ti} for CPU, MtlVector{Ti} for GPU)
+    sym_Ai::Union{Nothing, AIV}  # indices into plan.AT.nzval (on target backend)
+    sym_Bi::Union{Nothing, AIV}  # indices into A.nzval (on target backend)
+    sym_Ci::Union{Nothing, AIV}  # indices into result.nzval (on target backend)
+    sym_layer_starts::Union{Nothing, Vector{Ti}}  # layer_starts[l] = first index of layer l (always CPU for kernel control)
+    sym_colptr::Union{Nothing, Vector{Ti}}  # colptr for result (always CPU for result construction)
+    sym_rowval::Union{Nothing, Vector{Ti}}  # rowval for result (always CPU, compressed local indices)
 end
 
 """
-    MatrixPlan(row_indices::Vector{Int}, B::SparseMatrixMPI{T,Ti}) where {T,Ti}
+    MatrixPlan(row_indices::Vector{Int}, B::SparseMatrixMPI{T,Ti}, ::Type{AIV}) where {T,Ti,AIV}
 
 Create a communication plan to gather rows specified by row_indices from B.
-Assumes row_indices is sorted.
+Assumes row_indices is sorted. AIV is the index array type for symbolic multiply
+(Vector{Ti} for CPU, MtlVector{Ti} for GPU).
 
 The plan proceeds in 3 steps:
 1. For each row i in row_indices, determine owner. If remote, use isend to request structure.
 2. Receive requests from other ranks, add to rank_ids, isend structure responses.
 3. Receive structure info, build plan.AT with zeros (sparsity pattern of B[row_indices,:]).
 """
-function MatrixPlan(row_indices::Vector{Int}, B::SparseMatrixMPI{T,Ti}) where {T,Ti}
+function MatrixPlan(row_indices::Vector{Int}, B::SparseMatrixMPI{T,Ti}, ::Type{AIV}) where {T,Ti,AIV<:AbstractVector{Ti}}
     comm = MPI.COMM_WORLD
     rank = MPI.Comm_rank(comm)
     nranks = MPI.Comm_size(comm)
@@ -798,7 +806,7 @@ function MatrixPlan(row_indices::Vector{Int}, B::SparseMatrixMPI{T,Ti}) where {T
 
     plan_AT = SparseMatrixCSC(nrows_AT, n_total_cols, combined_colptr, combined_rowval, combined_nzval)
 
-    return MatrixPlan{T,Ti}(
+    return MatrixPlan{T,Ti,AIV}(
         rank_ids, send_ranges_vec, send_bufs, send_reqs,
         recv_rank_ids, recv_bufs, recv_reqs, recv_offsets_vec,
         local_ranges,
@@ -809,29 +817,50 @@ function MatrixPlan(row_indices::Vector{Int}, B::SparseMatrixMPI{T,Ti}) where {T
 end
 
 """
-    MatrixPlan(A::SparseMatrixMPI{T,Ti}, B::SparseMatrixMPI{T,Ti}) where {T,Ti}
+    _index_array_type(::Type{AV}, ::Type{Ti}) where {AV,Ti}
+
+Map value array type AV to index array type with element type Ti.
+For CPU (Vector{T}), returns Vector{Ti}. For GPU arrays, returns the
+corresponding GPU array type with Ti elements.
+"""
+_index_array_type(::Type{Vector{T}}, ::Type{Ti}) where {T,Ti} = Vector{Ti}
+# GPU versions are added by extensions
+
+"""
+    _to_target_backend(v::Vector{Ti}, ::Type{Vector{T}}) where {Ti,T}
+
+Convert a CPU index vector to the target backend.
+For CPU target, returns the same vector (no copy).
+For GPU target (e.g., MtlVector{T}), returns a GPU copy.
+"""
+_to_target_backend(v::Vector{Ti}, ::Type{Vector{T}}) where {Ti,T} = v
+# GPU versions are added by extensions
+
+"""
+    MatrixPlan(A::SparseMatrixMPI{T,Ti,AV}, B::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AV}
 
 Create a memoized communication plan for A * B.
-The plan is cached based on the structural hashes of A and B.
+The plan is cached based on the structural hashes of A, B, and the array type AV.
 """
-function MatrixPlan(A::SparseMatrixMPI{T,Ti}, B::SparseMatrixMPI{T,Ti}) where {T,Ti}
-    key = (_ensure_hash(A), _ensure_hash(B), T, Ti)
+function MatrixPlan(A::SparseMatrixMPI{T,Ti,AV}, B::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AV}
+    AIV = _index_array_type(AV, Ti)
+    key = (_ensure_hash(A), _ensure_hash(B), T, Ti, AV)
     if haskey(_plan_cache, key)
-        return _plan_cache[key]::MatrixPlan{T,Ti}
+        return _plan_cache[key]::MatrixPlan{T,Ti,AIV}
     end
-    plan = MatrixPlan(A.col_indices, B)
+    plan = MatrixPlan(A.col_indices, B, AIV)
     _plan_cache[key] = plan
     return plan
 end
 
 """
-    execute_plan!(plan::MatrixPlan{T,Ti}, B::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AV}
+    execute_plan!(plan::MatrixPlan{T,Ti,AIV}, B::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AIV,AV}
 
 Execute a communication plan to gather rows from B into plan.AT.
 After execution, plan.AT contains the values from B for the requested rows.
 This function handles both CPU and GPU matrices by staging GPU data to CPU for MPI.
 """
-function execute_plan!(plan::MatrixPlan{T,Ti}, B::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AV}
+function execute_plan!(plan::MatrixPlan{T,Ti,AIV}, B::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AIV,AV}
     comm = MPI.COMM_WORLD
 
     # Ensure B.nzval is on CPU for MPI communication
@@ -890,7 +919,7 @@ For each column j of C (1 to n):
     For each nonzero plan.AT[i, p] in column p:
       C[i, j] += plan.AT[i, p] * A_parent[p, j]
 """
-function _compute_symbolic_multiply!(plan::MatrixPlan{T,Ti}, A_parent::SparseMatrixCSC{T,Ti}) where {T,Ti}
+function _compute_symbolic_multiply!(plan::MatrixPlan{T,Ti,AIV}, A_parent::SparseMatrixCSC{T,Ti}) where {T,Ti,AIV}
     AT = plan.AT  # shape (m, k)
     B = A_parent  # shape (k, n), we call it B for clarity in the multiply
 
@@ -1050,10 +1079,12 @@ function _compute_symbolic_multiply!(plan::MatrixPlan{T,Ti}, A_parent::SparseMat
         Ci = Ci_sorted
     end
 
-    # Store in plan
-    plan.sym_Ai = Ai
-    plan.sym_Bi = Bi
-    plan.sym_Ci = Ci
+    # Store in plan, converting to target backend (AIV)
+    # For CPU (AIV=Vector{Ti}), this is a no-op
+    # For GPU (AIV=MtlVector{Ti}), this copies to GPU
+    plan.sym_Ai = AIV(Ai)
+    plan.sym_Bi = AIV(Bi)
+    plan.sym_Ci = AIV(Ci)
     plan.sym_layer_starts = layer_starts
     plan.sym_colptr = colptr
     plan.sym_rowval = rowval
@@ -1092,8 +1123,8 @@ Each layer is processed with a parallel KernelAbstractions kernel.
 
 Works on both CPU and GPU with the same code path.
 """
-function _execute_symbolic_multiply!(nzval::AbstractVector{T}, plan::MatrixPlan{T,Ti},
-                                      AT_nzval::AbstractVector{T}, B_nzval::AbstractVector{T}) where {T,Ti}
+function _execute_symbolic_multiply!(nzval::AbstractVector{T}, plan::MatrixPlan{T,Ti,AIV},
+                                      AT_nzval::AbstractVector{T}, B_nzval::AbstractVector{T}) where {T,Ti,AIV}
     # Zero the output
     fill!(nzval, zero(T))
 
@@ -1108,10 +1139,8 @@ function _execute_symbolic_multiply!(nzval::AbstractVector{T}, plan::MatrixPlan{
 
     backend = KernelAbstractions.get_backend(nzval)
 
-    # Adapt index arrays to target backend
-    Ai_target = KernelAbstractions.adapt(backend, Ai)
-    Bi_target = KernelAbstractions.adapt(backend, Bi)
-    Ci_target = KernelAbstractions.adapt(backend, Ci)
+    # Index arrays are already on the target backend (converted in _compute_symbolic_multiply!)
+    # No adapt() needed - use directly
 
     # Process each layer (layers are processed sequentially, elements within layer in parallel)
     num_layers = length(layer_starts) - 1
@@ -1123,7 +1152,7 @@ function _execute_symbolic_multiply!(nzval::AbstractVector{T}, plan::MatrixPlan{
         layer_size = layer_end - layer_start
 
         if layer_size > 0
-            kernel(nzval, Ai_target, Bi_target, Ci_target, AT_nzval, B_nzval,
+            kernel(nzval, Ai, Bi, Ci, AT_nzval, B_nzval,
                    layer_start, layer_size; ndrange=layer_size)
         end
     end
@@ -1205,9 +1234,12 @@ function Base.:*(A::SparseMatrixMPI{T,Ti,AV}, B::SparseMatrixMPI{T,Ti,AV}) where
     nrows_local = length(plan.sym_colptr) - 1
     ncols_compressed = length(plan.product_col_indices)
 
+    # Convert structure arrays to target backend
+    rowptr_target = _to_target_backend(plan.sym_colptr, AV)
+    colval_target = _to_target_backend(plan.sym_rowval, AV)
     return SparseMatrixMPI{T,Ti,AV}(plan.product_structural_hash, A.row_partition, B.col_partition,
         plan.product_col_indices, plan.sym_colptr, plan.sym_rowval, nzval,
-        nrows_local, ncols_compressed, nothing, nothing)
+        nrows_local, ncols_compressed, nothing, nothing, rowptr_target, colval_target)
 end
 
 """
@@ -1218,24 +1250,24 @@ Stores the result structure (colptr, rowval) and index mappings for SIMD-optimiz
 
 The plan preserves structural zeros, ensuring predictable output structure for hash caching.
 """
-mutable struct AdditionPlan{T,Ti}
-    # Result matrix structure (shared, not copied during execution)
+mutable struct AdditionPlan{T,Ti,AIV<:AbstractVector{Ti}}
+    # Result matrix structure (always CPU, used for result construction)
     colptr::Vector{Ti}
     rowval::Vector{Ti}
 
-    # Index mappings for SIMD execution:
+    # Index mappings for SIMD execution (on target backend - CPU or GPU):
     # For entries only in A: result.nzval[A_only_dst] = A.nzval[A_only_src]
-    A_only_src::Vector{Ti}
-    A_only_dst::Vector{Ti}
+    A_only_src::AIV
+    A_only_dst::AIV
     # For entries only in B: result.nzval[B_only_dst] = B.nzval[B_only_src]
-    B_only_src::Vector{Ti}
-    B_only_dst::Vector{Ti}
+    B_only_src::AIV
+    B_only_dst::AIV
     # For entries in both: result.nzval[both_dst] = A.nzval[both_A_src] + B.nzval[both_B_src]
-    both_A_src::Vector{Ti}
-    both_B_src::Vector{Ti}
-    both_dst::Vector{Ti}
+    both_A_src::AIV
+    both_B_src::AIV
+    both_dst::AIV
 
-    # Result metadata
+    # Result metadata (always CPU)
     row_partition::Vector{Int}
     col_partition::Vector{Int}
     col_indices::Vector{Int}
@@ -1245,15 +1277,17 @@ mutable struct AdditionPlan{T,Ti}
 end
 
 """
-    AdditionPlan(A::SparseMatrixMPI{T,Ti}, B::SparseMatrixMPI{T,Ti}) where {T,Ti}
+    AdditionPlan(A::SparseMatrixMPI{T,Ti,AV}, B::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AV}
 
 Create a plan for computing A + B (or A - B).
 Assumes B has already been repartitioned to match A's row_partition.
 
 The plan performs symbolic addition to determine the result structure,
 then precomputes index mappings for efficient SIMD execution.
+Index arrays are stored on the target backend (CPU or GPU) based on AV.
 """
-function AdditionPlan(A::SparseMatrixMPI{T,Ti}, B::SparseMatrixMPI{T,Ti}) where {T,Ti}
+function AdditionPlan(A::SparseMatrixMPI{T,Ti,AV}, B::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AV}
+    AIV = _index_array_type(AV, Ti)
     # Get the local CSC matrices (stored as transpose)
     A_csc = _get_csc(A)  # (ncols_compressed x nrows_local)
     B_csc = _get_csc(B)  # (ncols_compressed x nrows_local)
@@ -1374,11 +1408,14 @@ function AdditionPlan(A::SparseMatrixMPI{T,Ti}, B::SparseMatrixMPI{T,Ti}) where 
     temp_csc = SparseMatrixCSC(length(union_cols), nrows_local, colptr, rowval, temp_nzval)
     structural_hash = compute_structural_hash(A.row_partition, union_cols, temp_csc, MPI.COMM_WORLD)
 
-    return AdditionPlan{T,Ti}(
+    # Convert index arrays to target backend (AIV)
+    # For CPU (AIV=Vector{Ti}), this is a no-op
+    # For GPU (AIV=MtlVector{Ti}), this copies to GPU
+    return AdditionPlan{T,Ti,AIV}(
         colptr, rowval,
-        Ti.(A_only_src), Ti.(A_only_dst),
-        Ti.(B_only_src), Ti.(B_only_dst),
-        Ti.(both_A_src), Ti.(both_B_src), Ti.(both_dst),
+        AIV(Ti.(A_only_src)), AIV(Ti.(A_only_dst)),
+        AIV(Ti.(B_only_src)), AIV(Ti.(B_only_dst)),
+        AIV(Ti.(both_A_src)), AIV(Ti.(both_B_src)), AIV(Ti.(both_dst)),
         A.row_partition, A.col_partition, union_cols,
         structural_hash
     )
@@ -1446,35 +1483,29 @@ end
 Execute an addition plan: result = A + B.
 Uses unified KernelAbstractions kernels that work on both CPU and GPU.
 """
-function execute_addition!(nzval::AbstractVector{T}, plan::AdditionPlan{T,Ti},
-                           A_nzval::AbstractVector{T}, B_nzval::AbstractVector{T}) where {T,Ti}
+function execute_addition!(nzval::AbstractVector{T}, plan::AdditionPlan{T,Ti,AIV},
+                           A_nzval::AbstractVector{T}, B_nzval::AbstractVector{T}) where {T,Ti,AIV}
     backend = KernelAbstractions.get_backend(nzval)
 
-    # Adapt index arrays to target backend
-    A_src = KernelAbstractions.adapt(backend, plan.A_only_src)
-    A_dst = KernelAbstractions.adapt(backend, plan.A_only_dst)
-    B_src = KernelAbstractions.adapt(backend, plan.B_only_src)
-    B_dst = KernelAbstractions.adapt(backend, plan.B_only_dst)
-    both_A = KernelAbstractions.adapt(backend, plan.both_A_src)
-    both_B = KernelAbstractions.adapt(backend, plan.both_B_src)
-    both_d = KernelAbstractions.adapt(backend, plan.both_dst)
+    # Index arrays are already on the target backend (converted in AdditionPlan constructor)
+    # No adapt() needed - use directly
 
     # Copy A-only entries
     if !isempty(plan.A_only_src)
         kernel = _copy_a_only_kernel!(backend)
-        kernel(nzval, A_nzval, A_src, A_dst; ndrange=length(plan.A_only_src))
+        kernel(nzval, A_nzval, plan.A_only_src, plan.A_only_dst; ndrange=length(plan.A_only_src))
     end
 
     # Copy B-only entries
     if !isempty(plan.B_only_src)
         kernel = _copy_b_only_kernel!(backend)
-        kernel(nzval, B_nzval, B_src, B_dst; ndrange=length(plan.B_only_src))
+        kernel(nzval, B_nzval, plan.B_only_src, plan.B_only_dst; ndrange=length(plan.B_only_src))
     end
 
     # Add entries in both
     if !isempty(plan.both_dst)
         kernel = _add_both_kernel!(backend)
-        kernel(nzval, A_nzval, B_nzval, both_A, both_B, both_d; ndrange=length(plan.both_dst))
+        kernel(nzval, A_nzval, B_nzval, plan.both_A_src, plan.both_B_src, plan.both_dst; ndrange=length(plan.both_dst))
     end
 
     KernelAbstractions.synchronize(backend)
@@ -1487,35 +1518,29 @@ end
 Execute a subtraction plan: result = A - B.
 Uses unified KernelAbstractions kernels that work on both CPU and GPU.
 """
-function execute_subtraction!(nzval::AbstractVector{T}, plan::AdditionPlan{T,Ti},
-                              A_nzval::AbstractVector{T}, B_nzval::AbstractVector{T}) where {T,Ti}
+function execute_subtraction!(nzval::AbstractVector{T}, plan::AdditionPlan{T,Ti,AIV},
+                              A_nzval::AbstractVector{T}, B_nzval::AbstractVector{T}) where {T,Ti,AIV}
     backend = KernelAbstractions.get_backend(nzval)
 
-    # Adapt index arrays to target backend
-    A_src = KernelAbstractions.adapt(backend, plan.A_only_src)
-    A_dst = KernelAbstractions.adapt(backend, plan.A_only_dst)
-    B_src = KernelAbstractions.adapt(backend, plan.B_only_src)
-    B_dst = KernelAbstractions.adapt(backend, plan.B_only_dst)
-    both_A = KernelAbstractions.adapt(backend, plan.both_A_src)
-    both_B = KernelAbstractions.adapt(backend, plan.both_B_src)
-    both_d = KernelAbstractions.adapt(backend, plan.both_dst)
+    # Index arrays are already on the target backend (converted in AdditionPlan constructor)
+    # No adapt() needed - use directly
 
     # Copy A-only entries
     if !isempty(plan.A_only_src)
         kernel = _copy_a_only_kernel!(backend)
-        kernel(nzval, A_nzval, A_src, A_dst; ndrange=length(plan.A_only_src))
+        kernel(nzval, A_nzval, plan.A_only_src, plan.A_only_dst; ndrange=length(plan.A_only_src))
     end
 
     # Negate B-only entries
     if !isempty(plan.B_only_src)
         kernel = _negate_b_only_kernel!(backend)
-        kernel(nzval, B_nzval, B_src, B_dst; ndrange=length(plan.B_only_src))
+        kernel(nzval, B_nzval, plan.B_only_src, plan.B_only_dst; ndrange=length(plan.B_only_src))
     end
 
     # Subtract entries in both
     if !isempty(plan.both_dst)
         kernel = _sub_both_kernel!(backend)
-        kernel(nzval, A_nzval, B_nzval, both_A, both_B, both_d; ndrange=length(plan.both_dst))
+        kernel(nzval, A_nzval, B_nzval, plan.both_A_src, plan.both_B_src, plan.both_dst; ndrange=length(plan.both_dst))
     end
 
     KernelAbstractions.synchronize(backend)
@@ -1523,15 +1548,17 @@ function execute_subtraction!(nzval::AbstractVector{T}, plan::AdditionPlan{T,Ti}
 end
 
 """
-    _get_addition_plan(A::SparseMatrixMPI{T,Ti}, B::SparseMatrixMPI{T,Ti}) where {T,Ti}
+    _get_addition_plan(A::SparseMatrixMPI{T,Ti,AV}, B::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AV}
 
 Get or create a cached addition plan for A + B.
 B must already be repartitioned to match A's row_partition.
+The plan's index arrays are stored on the target backend (CPU or GPU) based on AV.
 """
-function _get_addition_plan(A::SparseMatrixMPI{T,Ti}, B::SparseMatrixMPI{T,Ti}) where {T,Ti}
-    key = (A.structural_hash, B.structural_hash, T, Ti)
+function _get_addition_plan(A::SparseMatrixMPI{T,Ti,AV}, B::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AV}
+    AIV = _index_array_type(AV, Ti)
+    key = (A.structural_hash, B.structural_hash, T, Ti, AV)
     if haskey(_addition_plan_cache, key)
-        return _addition_plan_cache[key]::AdditionPlan{T,Ti}
+        return _addition_plan_cache[key]::AdditionPlan{T,Ti,AIV}
     end
     plan = AdditionPlan(A, B)
     _addition_plan_cache[key] = plan
@@ -1572,9 +1599,12 @@ function Base.:+(A::SparseMatrixMPI{T,Ti,AV}, B::SparseMatrixMPI{T,Ti,AV}) where
     nrows_local = length(plan.colptr) - 1
     ncols_compressed = length(plan.col_indices)
 
+    # Convert structure arrays to target backend
+    rowptr_target = _to_target_backend(plan.colptr, AV)
+    colval_target = _to_target_backend(plan.rowval, AV)
     return SparseMatrixMPI{T,Ti,AV}(plan.structural_hash, plan.row_partition, plan.col_partition,
         plan.col_indices, plan.colptr, plan.rowval, nzval,
-        nrows_local, ncols_compressed, nothing, nothing)
+        nrows_local, ncols_compressed, nothing, nothing, rowptr_target, colval_target)
 end
 
 """
@@ -1611,9 +1641,12 @@ function Base.:-(A::SparseMatrixMPI{T,Ti,AV}, B::SparseMatrixMPI{T,Ti,AV}) where
     nrows_local = length(plan.colptr) - 1
     ncols_compressed = length(plan.col_indices)
 
+    # Convert structure arrays to target backend
+    rowptr_target = _to_target_backend(plan.colptr, AV)
+    colval_target = _to_target_backend(plan.rowval, AV)
     return SparseMatrixMPI{T,Ti,AV}(plan.structural_hash, plan.row_partition, plan.col_partition,
         plan.col_indices, plan.colptr, plan.rowval, nzval,
-        nrows_local, ncols_compressed, nothing, nothing)
+        nrows_local, ncols_compressed, nothing, nothing, rowptr_target, colval_target)
 end
 
 """
@@ -1944,9 +1977,12 @@ function execute_plan!(plan::TransposePlan{T,Ti}, A::SparseMatrixMPI{T,Ti,AV}) w
     # Copy result to GPU if input was GPU
     result_nzval = _create_output_like(A.nzval, compressed_result_AT.nzval)
 
+    # Convert structure arrays to target backend
+    rowptr_target = _to_target_backend(compressed_result_AT.colptr, AV)
+    colval_target = _to_target_backend(compressed_result_AT.rowval, AV)
     return SparseMatrixMPI{T,Ti,AV}(plan.structural_hash, plan.row_partition, plan.col_partition,
         plan.col_indices, compressed_result_AT.colptr, compressed_result_AT.rowval, result_nzval,
-        nrows_local, ncols_compressed, nothing, nothing)
+        nrows_local, ncols_compressed, nothing, nothing, rowptr_target, colval_target)
 end
 
 """
@@ -2185,17 +2221,14 @@ end
 
 Unified sparse matrix-vector multiplication using KernelAbstractions.
 Works on both CPU and GPU - the backend is determined from the output array y.
-Structure arrays (rowptr, colval) are adapted to the target backend.
+Structure arrays (rowptr, colval) should already be on the target backend.
 """
-function _spmv!(y::AbstractVector{T}, rowptr::Vector, colval::Vector,
+function _spmv!(y::AbstractVector{T}, rowptr::AbstractVector, colval::AbstractVector,
                 nzval::AbstractVector{T}, x::AbstractVector{T}) where T
     backend = KernelAbstractions.get_backend(y)
-    # Adapt structure arrays to target backend (no-op for CPU, copies for GPU)
-    rowptr_target = KernelAbstractions.adapt(backend, rowptr)
-    colval_target = KernelAbstractions.adapt(backend, colval)
-    # Launch kernel
+    # Structure arrays should already be on target backend (no adapt needed)
     kernel = _spmv_kernel!(backend)
-    kernel(y, rowptr_target, colval_target, nzval, x; ndrange=length(y))
+    kernel(y, rowptr, colval, nzval, x; ndrange=length(y))
     KernelAbstractions.synchronize(backend)
     return y
 end
@@ -2231,8 +2264,9 @@ function Base.:*(A::SparseMatrixMPI{T,Ti,AV}, x::VectorMPI{T,AVX}) where {T,Ti,A
     gathered = _create_output_like(A.nzval, gathered_cpu)
     y_local = similar(A.nzval, local_rows)
 
-    # Unified SpMV kernel (works on CPU or GPU based on A.nzval's backend)
-    _spmv!(y_local, A.rowptr, A.colval, A.nzval, gathered)
+    # Unified SpMV kernel using pre-computed target arrays (works on CPU or GPU)
+    # A.rowptr_target and A.colval_target are on the same backend as A.nzval
+    _spmv!(y_local, A.rowptr_target, A.colval_target, A.nzval, gathered)
 
     # Determine result vector type: use A's storage type
     return VectorMPI{T,AV}(
@@ -2378,9 +2412,10 @@ function Base.conj(A::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AV}
     new_nzval = conj.(A.nzval)
 
     # Structural hash is the same since structure didn't change
+    # Reuse rowptr_target/colval_target since structure is identical
     return SparseMatrixMPI{T,Ti,AV}(A.structural_hash, A.row_partition, A.col_partition,
         A.col_indices, A.rowptr, A.colval, new_nzval,
-        A.nrows_local, A.ncols_compressed, nothing, nothing)
+        A.nrows_local, A.ncols_compressed, nothing, nothing, A.rowptr_target, A.colval_target)
 end
 
 """
@@ -2407,9 +2442,12 @@ function Base.:*(a::Number, A::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AV}
     # Determine the new AV type based on the result
     AVR = typeof(new_nzval)
 
+    # Convert structure arrays to target backend (may differ if type changed)
+    rowptr_target = _to_target_backend(A.rowptr, AVR)
+    colval_target = _to_target_backend(A.colval, AVR)
     return SparseMatrixMPI{RT,Ti,AVR}(A.structural_hash, A.row_partition, A.col_partition,
         A.col_indices, A.rowptr, A.colval, new_nzval,
-        A.nrows_local, A.ncols_compressed, nothing, A.cached_symmetric)
+        A.nrows_local, A.ncols_compressed, nothing, A.cached_symmetric, rowptr_target, colval_target)
 end
 
 """
@@ -2573,18 +2611,25 @@ issparse(::SparseMatrixMPI) = true
 Create a deep copy of the distributed sparse matrix.
 """
 function Base.copy(A::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AV}
+    new_rowptr = copy(A.rowptr)
+    new_colval = copy(A.colval)
+    # Convert structure arrays to target backend
+    rowptr_target = _to_target_backend(new_rowptr, AV)
+    colval_target = _to_target_backend(new_colval, AV)
     return SparseMatrixMPI{T,Ti,AV}(
         A.structural_hash,
         copy(A.row_partition),
         copy(A.col_partition),
         copy(A.col_indices),
-        copy(A.rowptr),
-        copy(A.colval),
+        new_rowptr,
+        new_colval,
         copy(A.nzval),
         A.nrows_local,
         A.ncols_compressed,
         nothing,
-        A.cached_symmetric  # preserve symmetry cache on copy
+        A.cached_symmetric,  # preserve symmetry cache on copy
+        rowptr_target,
+        colval_target
     )
 end
 
@@ -2605,9 +2650,12 @@ function _map_nzval(f, A::SparseMatrixMPI{T,Ti,AV}) where {T,Ti,AV}
     new_nzval .= f.(A.nzval)
 
     AVR = typeof(new_nzval)
+    # Convert structure arrays to target backend (may differ if type changed)
+    rowptr_target = _to_target_backend(A.rowptr, AVR)
+    colval_target = _to_target_backend(A.colval, AVR)
     return SparseMatrixMPI{RT,Ti,AVR}(A.structural_hash, A.row_partition, A.col_partition,
         A.col_indices, A.rowptr, A.colval, new_nzval,
-        A.nrows_local, A.ncols_compressed, nothing, A.cached_symmetric)
+        A.nrows_local, A.ncols_compressed, nothing, A.cached_symmetric, rowptr_target, colval_target)
 end
 
 """
@@ -2838,9 +2886,10 @@ function dropzeros(A::SparseMatrixMPI{T,Ti}) where {T,Ti}
     nrows_local = new_AT.n
     ncols_compressed = length(new_col_indices)
 
+    # For CPU, rowptr_target and colval_target are the same as rowptr and colval
     return SparseMatrixMPI{T,Ti,Vector{T}}(structural_hash, copy(A.row_partition), copy(A.col_partition),
         new_col_indices, new_AT.colptr, new_AT.rowval, new_AT.nzval,
-        nrows_local, ncols_compressed, nothing, nothing)
+        nrows_local, ncols_compressed, nothing, nothing, new_AT.colptr, new_AT.rowval)
 end
 
 # ============================================================================
@@ -2997,9 +3046,10 @@ function triu(A::SparseMatrixMPI{T,Ti}, k::Integer=0) where {T,Ti}
     nrows_local = A.nrows_local
     ncols_compressed = length(new_col_indices)
 
+    # For CPU, rowptr_target and colval_target are the same as rowptr and colval
     return SparseMatrixMPI{T,Ti,Vector{T}}(structural_hash, copy(A.row_partition), copy(A.col_partition),
         new_col_indices, new_rowptr, new_colval, new_nzval_final,
-        nrows_local, ncols_compressed, nothing, nothing)
+        nrows_local, ncols_compressed, nothing, nothing, new_rowptr, new_colval)
 end
 
 """
@@ -3077,9 +3127,10 @@ function tril(A::SparseMatrixMPI{T,Ti}, k::Integer=0) where {T,Ti}
     nrows_local = A.nrows_local
     ncols_compressed = length(new_col_indices)
 
+    # For CPU, rowptr_target and colval_target are the same as rowptr and colval
     return SparseMatrixMPI{T,Ti,Vector{T}}(structural_hash, copy(A.row_partition), copy(A.col_partition),
         new_col_indices, new_rowptr, new_colval, new_nzval_final,
-        nrows_local, ncols_compressed, nothing, nothing)
+        nrows_local, ncols_compressed, nothing, nothing, new_rowptr, new_colval)
 end
 
 # ============================================================================
@@ -3535,9 +3586,10 @@ function spdiagm(v::VectorMPI{T}) where T
         # Reuse cached structure - use new explicit arrays constructor
         cache = _diag_structure_cache[vec_hash]
         nzval = copy(v.v)
+        # For CPU, rowptr_target and colval_target are the same as rowptr and colval
         return SparseMatrixMPI{T,Int,Vector{T}}(cache.structural_hash, row_partition, col_partition,
                                        cache.col_indices, cache.colptr, cache.rowval, nzval,
-                                       local_n, length(cache.col_indices), nothing, true)
+                                       local_n, length(cache.col_indices), nothing, true, cache.colptr, cache.rowval)
     end
 
     # Build CSR structure directly using explicit arrays
@@ -3557,8 +3609,9 @@ function spdiagm(v::VectorMPI{T}) where T
     _diag_structure_cache[vec_hash] = DiagStructureCache(rowptr, colval, col_indices, diag_hash)
 
     # Diagonal matrices are always symmetric
+    # For CPU, rowptr_target and colval_target are the same as rowptr and colval
     return SparseMatrixMPI{T,Int,Vector{T}}(diag_hash, row_partition, col_partition, col_indices,
-                               rowptr, colval, nzval, local_n, length(col_indices), nothing, true)
+                               rowptr, colval, nzval, local_n, length(col_indices), nothing, true, rowptr, colval)
 end
 
 """
@@ -3917,8 +3970,9 @@ function Base.:+(A::SparseMatrixMPI{T,Ti}, J::UniformScaling) where {T,Ti}
     nrows_local = length(plan.colptr) - 1
     ncols_compressed = length(plan.col_indices)
 
+    # For CPU, rowptr_target and colval_target are the same as rowptr and colval
     return SparseMatrixMPI{RT,Ti,Vector{RT}}(plan.structural_hash, plan.row_partition, plan.col_partition,
-        plan.col_indices, plan.colptr, plan.rowval, nzval, nrows_local, ncols_compressed, nothing, nothing)
+        plan.col_indices, plan.colptr, plan.rowval, nzval, nrows_local, ncols_compressed, nothing, nothing, plan.colptr, plan.rowval)
 end
 
 """
@@ -3984,8 +4038,9 @@ function Base.:-(J::UniformScaling, A::SparseMatrixMPI{T,Ti}) where {T,Ti}
     nrows_local = length(plan.colptr) - 1
     ncols_compressed = length(plan.col_indices)
 
+    # For CPU, rowptr_target and colval_target are the same as rowptr and colval
     return SparseMatrixMPI{RT,Ti,Vector{RT}}(plan.structural_hash, plan.row_partition, plan.col_partition,
-        plan.col_indices, plan.colptr, plan.rowval, nzval, nrows_local, ncols_compressed, nothing, nothing)
+        plan.col_indices, plan.colptr, plan.rowval, nzval, nrows_local, ncols_compressed, nothing, nothing, plan.colptr, plan.rowval)
 end
 
 # ============================================================================
@@ -4434,18 +4489,23 @@ function execute_plan!(plan::SparseRepartitionPlan{T,Ti}, A::SparseMatrixMPI{T,T
     nrows_local = plan.result_AT.n
     ncols_compressed = length(plan.result_col_indices)
 
+    # Copy structure arrays and use them for both CPU and target (since this is CPU-only)
+    new_rowptr = copy(plan.result_AT.colptr)
+    new_colval = copy(plan.result_AT.rowval)
     return SparseMatrixMPI{T,Ti,Vector{T}}(
         plan.result_structural_hash,
         plan.result_row_partition,
         plan.result_col_partition,
         plan.result_col_indices,
-        copy(plan.result_AT.colptr),  # rowptr
-        copy(plan.result_AT.rowval),  # colval
+        new_rowptr,
+        new_colval,
         result_nzval,
         nrows_local,
         ncols_compressed,
         nothing,  # cached_transpose
-        nothing   # cached_symmetric
+        nothing,  # cached_symmetric
+        new_rowptr,  # rowptr_target (same as rowptr for CPU)
+        new_colval   # colval_target (same as colval for CPU)
     )
 end
 
