@@ -139,12 +139,13 @@ function LinearAlgebraMPI._array_to_backend(v::Vector{T}, ::Type{<:MtlVector}) w
 end
 
 """
-    _create_output_like(v::LinearAlgebraMPI.VectorMPI{T,<:Vector}, ::Type{<:MtlVector}) where T
+    _convert_vector_to_backend(v::LinearAlgebraMPI.VectorMPI{T,<:Vector}, ::Type{<:MtlVector}) where T
 
-Create a VectorMPI with MtlVector backend from a CPU VectorMPI.
-Used by MUMPS factorization to reconstruct GPU output vectors.
+Convert a CPU VectorMPI to GPU (Metal) backend.
+WARNING: This function exists ONLY for MUMPS, which is a CPU-only solver.
+MUMPS requires GPU→CPU→GPU cycling. Do NOT use this for general operations.
 """
-function LinearAlgebraMPI._create_output_like(v::LinearAlgebraMPI.VectorMPI{T,<:Vector}, ::Type{<:MtlVector}) where T
+function LinearAlgebraMPI._convert_vector_to_backend(v::LinearAlgebraMPI.VectorMPI{T,<:Vector}, ::Type{<:MtlVector}) where T
     return LinearAlgebraMPI.mtl(v)
 end
 

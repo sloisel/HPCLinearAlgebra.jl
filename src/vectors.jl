@@ -111,12 +111,12 @@ function Adapt.adapt_structure(to, v::VectorMPI{T,AV}) where {T,AV}
 end
 
 # Helper to create output vector with same storage type as reference
-# Used by sparse and dense A*x operations
+# STRICT: Only allows same-type matching. Mismatched types will error.
+# This prevents accidental CPU↔GPU mixing.
 _create_output_like(::Vector{T}, result::Vector{T}) where T = result
-_create_output_like(ref::AV, result::Vector{T}) where {T,AV<:AbstractVector{T}} =
-    copyto!(similar(ref, length(result)), result)
-# When result is already the same type as reference, return as-is (e.g., both GPU)
 _create_output_like(::AV, result::AV) where {T,AV<:AbstractVector{T}} = result
+# Note: No catch-all method for (GPU, CPU) - this is intentional to catch bugs.
+# MPI staging (CPU→GPU) is inlined where needed with explicit ternary checks.
 
 # Helper to get CPU copy of vector data (no-op for CPU, copy for GPU)
 # Used for MPI communication which always requires CPU buffers
@@ -503,31 +503,34 @@ function VectorRepartitionPlan(x::VectorMPI{T}, p::Vector{Int}) where T
 end
 
 """
-    execute_plan!(plan::VectorRepartitionPlan{T}, x::VectorMPI{T}) where T
+    execute_plan!(plan::VectorRepartitionPlan{T}, x::VectorMPI{T,AV}) where {T,AV}
 
 Execute a vector repartition plan to redistribute elements from x to a new partition.
-Returns a new VectorMPI with the target partition.
+Returns a new VectorMPI with the target partition, preserving the array type (CPU/GPU).
 """
-function execute_plan!(plan::VectorRepartitionPlan{T}, x::VectorMPI{T}) where T
+function execute_plan!(plan::VectorRepartitionPlan{T}, x::VectorMPI{T,AV}) where {T,AV}
     comm = MPI.COMM_WORLD
 
-    # Allocate result
-    result_v = Vector{T}(undef, plan.result_local_size)
+    # Get CPU version of input for MPI operations
+    x_cpu = _ensure_cpu(x.v)
 
-    # Step 1: Local copy
+    # Allocate CPU result buffer (MPI requires CPU)
+    result_cpu = Vector{T}(undef, plan.result_local_size)
+
+    # Step 1: Local copy (from CPU staging)
     if !isempty(plan.local_src_range)
         @inbounds for (i, src_i) in enumerate(plan.local_src_range)
-            result_v[plan.local_dst_offset + i - 1] = x.v[src_i]
+            result_cpu[plan.local_dst_offset + i - 1] = x_cpu[src_i]
         end
     end
 
-    # Step 2: Fill send buffers and send
+    # Step 2: Fill send buffers and send (from CPU staging)
     @inbounds for i in eachindex(plan.send_rank_ids)
         r = plan.send_rank_ids[i]
         range = plan.send_ranges[i]
         buf = plan.send_bufs[i]
         for (k, src_k) in enumerate(range)
-            buf[k] = x.v[src_k]
+            buf[k] = x_cpu[src_k]
         end
         plan.send_reqs[i] = MPI.Isend(buf, comm; dest=r, tag=92)
     end
@@ -544,13 +547,16 @@ function execute_plan!(plan::VectorRepartitionPlan{T}, x::VectorMPI{T}) where T
         offset = plan.recv_offsets[i]
         buf = plan.recv_bufs[i]
         for k in eachindex(buf)
-            result_v[offset + k - 1] = buf[k]
+            result_cpu[offset + k - 1] = buf[k]
         end
     end
 
     MPI.Waitall(plan.send_reqs)
 
-    return VectorMPI{T}(plan.result_partition_hash, plan.result_partition, result_v)
+    # Copy result back to target array type (GPU if input was GPU)
+    result_v = x.v isa Vector ? result_cpu : copyto!(similar(x.v, length(result_cpu)), result_cpu)
+
+    return VectorMPI{T,typeof(result_v)}(plan.result_partition_hash, plan.result_partition, result_v)
 end
 
 """

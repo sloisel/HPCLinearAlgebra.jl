@@ -617,7 +617,8 @@ function Base.:*(A::MatrixMPI{T,AM}, x::VectorMPI{T,AV}) where {T,AM,AV}
         # Matrix is on CPU - compute on CPU, then copy to GPU if needed
         y_local_cpu = Vector{T}(undef, local_rows)
         LinearAlgebra.mul!(y_local_cpu, A.A, plan.gathered_cpu)
-        y_v = _create_output_like(x.v, y_local_cpu)
+        # Copy to GPU if input was GPU
+        y_v = x.v isa Vector ? y_local_cpu : copyto!(similar(x.v, local_rows), y_local_cpu)
     else
         # Matrix is on GPU - use GPU gathered buffer directly
         y_v = similar(A.A, local_rows)
@@ -1206,8 +1207,8 @@ function Base.:*(At::Transpose{T,<:MatrixMPI{T}}, x::VectorMPI{T,AV}) where {T,A
     my_col_end = A.col_partition[rank+2] - 1
     local_result_cpu = full_result[my_col_start:my_col_end]
 
-    # Create output with same storage type as input
-    local_result = _create_output_like(x.v, local_result_cpu)
+    # Copy to GPU if input was GPU
+    local_result = x.v isa Vector ? local_result_cpu : copyto!(similar(x.v, length(local_result_cpu)), local_result_cpu)
 
     # Create result vector (partition is immutable, no need to copy)
     y = VectorMPI{T,AV}(
@@ -1470,6 +1471,11 @@ end
 # DenseRepartitionPlan: Repartition a MatrixMPI to a new row partition
 # ============================================================================
 
+# Helper to get CPU copy of matrix data (no-op for CPU, copy for GPU)
+# Used for MPI communication which always requires CPU buffers
+_ensure_cpu(M::Matrix) = M
+_ensure_cpu(M::AbstractMatrix) = Array(M)
+
 """
     DenseRepartitionPlan{T}
 
@@ -1631,28 +1637,31 @@ function DenseRepartitionPlan(A::MatrixMPI{T}, p::Vector{Int}) where T
 end
 
 """
-    execute_plan!(plan::DenseRepartitionPlan{T}, A::MatrixMPI{T}) where T
+    execute_plan!(plan::DenseRepartitionPlan{T}, A::MatrixMPI{T,AM}) where {T,AM}
 
 Execute a dense repartition plan to redistribute rows from A to a new partition.
-Returns a new MatrixMPI with the target row partition.
+Returns a new MatrixMPI with the target row partition, preserving the array type (CPU/GPU).
 """
-function execute_plan!(plan::DenseRepartitionPlan{T}, A::MatrixMPI{T}) where T
+function execute_plan!(plan::DenseRepartitionPlan{T}, A::MatrixMPI{T,AM}) where {T,AM}
     comm = MPI.COMM_WORLD
 
-    # Allocate result
-    result_A = Matrix{T}(undef, plan.result_local_nrows, plan.ncols)
+    # Get CPU version of input for MPI operations
+    A_cpu = _ensure_cpu(A.A)
 
-    # Step 1: Local copy
+    # Allocate CPU result buffer (MPI requires CPU)
+    result_cpu = Matrix{T}(undef, plan.result_local_nrows, plan.ncols)
+
+    # Step 1: Local copy (from CPU staging)
     if !isempty(plan.local_src_range) && !isempty(plan.local_dst_range)
-        result_A[plan.local_dst_range, :] = A.A[plan.local_src_range, :]
+        result_cpu[plan.local_dst_range, :] = A_cpu[plan.local_src_range, :]
     end
 
-    # Step 2: Fill send buffers and send
+    # Step 2: Fill send buffers and send (from CPU staging)
     @inbounds for i in eachindex(plan.send_rank_ids)
         r = plan.send_rank_ids[i]
         row_range = plan.send_row_ranges[i]
         buf = plan.send_bufs[i]
-        buf .= @view A.A[row_range, :]
+        buf .= @view A_cpu[row_range, :]
         plan.send_reqs[i] = MPI.Isend(vec(buf), comm; dest=r, tag=93)
     end
 
@@ -1667,12 +1676,15 @@ function execute_plan!(plan::DenseRepartitionPlan{T}, A::MatrixMPI{T}) where T
     @inbounds for i in eachindex(plan.recv_rank_ids)
         dst_range = plan.recv_dst_ranges[i]
         buf = plan.recv_bufs[i]
-        result_A[dst_range, :] = buf
+        result_cpu[dst_range, :] = buf
     end
 
     MPI.Waitall(plan.send_reqs)
 
-    return MatrixMPI{T}(plan.result_structural_hash, plan.result_row_partition, plan.result_col_partition, result_A)
+    # Copy result back to target array type (GPU if input was GPU)
+    result_A = A.A isa Matrix ? result_cpu : copyto!(similar(A.A, size(result_cpu)...), result_cpu)
+
+    return MatrixMPI{T,typeof(result_A)}(plan.result_structural_hash, plan.result_row_partition, plan.result_col_partition, result_A)
 end
 
 """

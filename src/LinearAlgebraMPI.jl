@@ -851,7 +851,8 @@ _matrix_to_svectors(M::AbstractMatrix{T}) where {T} = _matrix_to_svectors(Val(si
 # Helper: Convert Vector{SVector} back to Matrix
 function _svectors_to_matrix(v::AbstractVector{SVector{K,T}}) where {K,T}
     # reinterpret as (K, nrows), then transpose to (nrows, K)
-    Matrix(transpose(reinterpret(reshape, T, v)))
+    # Use copy(transpose(...)) to preserve GPU array type (not Matrix(...) which forces CPU)
+    copy(transpose(reinterpret(reshape, T, v)))
 end
 
 # Helper: Convert to SVector representation for map_rows
@@ -941,7 +942,7 @@ function map_rows(f, A...)
     row_partition = first_arg isa VectorMPI ? first_arg.partition : first_arg.row_partition
     hash = compute_partition_hash(row_partition)
 
-    if local_result isa Matrix
+    if local_result isa AbstractMatrix
         return MatrixMPI(
             hash,
             row_partition,

@@ -3,6 +3,7 @@ MPI.Init()
 
 using LinearAlgebraMPI
 using LinearAlgebra
+using StaticArrays
 using Test
 
 comm = MPI.COMM_WORLD
@@ -13,7 +14,7 @@ nranks = MPI.Comm_size(comm)
     # Test 1: Single VectorMPI, f returns scalar
     @testset "VectorMPI -> scalar" begin
         v = VectorMPI([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
-        result = map_rows(r -> r[1]^2, v)
+        result = map_rows(r -> r^2, v)
         expected = [1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0, 64.0]
         @test Vector(result) ≈ expected
     end
@@ -22,7 +23,7 @@ nranks = MPI.Comm_size(comm)
     @testset "Two VectorMPIs -> scalar" begin
         u = VectorMPI([1.0, 2.0, 3.0, 4.0])
         v = VectorMPI([4.0, 3.0, 2.0, 1.0])
-        result = map_rows((a, b) -> a[1] * b[1], u, v)
+        result = map_rows((a, b) -> a * b, u, v)
         expected = [4.0, 6.0, 6.0, 4.0]
         @test Vector(result) ≈ expected
     end
@@ -35,121 +36,83 @@ nranks = MPI.Comm_size(comm)
         @test Vector(result) ≈ expected
     end
 
-    # Test 4: f returns column vector -> vcat into longer VectorMPI
-    @testset "f returns column vector (vcat semantics)" begin
+    # Test 4: f returns SVector -> MatrixMPI
+    @testset "f returns SVector -> MatrixMPI" begin
         A = MatrixMPI([1.0 2.0; 3.0 4.0; 5.0 6.0])
-        result = map_rows(r -> [1, 2, 3], A)
-        # Each row produces [1,2,3], vcat gives 9 elements
-        expected = [1, 2, 3, 1, 2, 3, 1, 2, 3]
-        @test Vector(result) == expected
-        @test length(result) == 9
-    end
-
-    # Test 5: f returns row vector -> vcat stacks into MatrixMPI
-    @testset "f returns row vector (vcat semantics)" begin
-        A = MatrixMPI([1.0 2.0; 3.0 4.0; 5.0 6.0])
-        result = map_rows(r -> [1 2 3], A)  # 1×3 row matrix
-        # Each row produces [1 2 3], vcat stacks into 3×3 matrix
+        result = map_rows(r -> SVector(1, 2, 3), A)
         expected = [1 2 3; 1 2 3; 1 2 3]
         @test Matrix(result) == expected
         @test size(result) == (3, 3)
     end
 
-    # Test 6: f returns adjoint row vector
-    @testset "f returns adjoint row vector" begin
+    # Test 5: f returns SVector computed from row
+    @testset "f returns SVector from row" begin
         A = MatrixMPI([1.0 2.0; 3.0 4.0; 5.0 6.0; 7.0 8.0])
-        result = map_rows(r -> [1, 2, 3]', A)
-        expected = [1 2 3; 1 2 3; 1 2 3; 1 2 3]
-        @test Matrix(result) == expected
-        @test size(result) == (4, 3)
+        result = map_rows(r -> SVector(sum(r), prod(r)), A)
+        expected = [3.0 2.0; 7.0 12.0; 11.0 30.0; 15.0 56.0]
+        @test Matrix(result) ≈ expected
+        @test size(result) == (4, 2)
     end
 
-    # Test 7: MatrixMPI and VectorMPI together
+    # Test 6: MatrixMPI and VectorMPI together
     @testset "MatrixMPI + VectorMPI -> scalar" begin
         A = MatrixMPI([1.0 2.0 3.0; 4.0 5.0 6.0; 7.0 8.0 9.0; 10.0 11.0 12.0])
         w = VectorMPI([1.0, 2.0, 3.0, 4.0])
         # Compute weighted row sums
-        result = map_rows((row, wi) -> sum(row) * wi[1], A, w)
+        result = map_rows((row, wi) -> sum(row) * wi, A, w)
         expected = [6.0 * 1.0, 15.0 * 2.0, 24.0 * 3.0, 33.0 * 4.0]
         @test Vector(result) ≈ expected
     end
 
-    # Test 8: Two MatrixMPIs, f returns column vector (vcat behavior)
-    @testset "Two MatrixMPIs -> column vector (vcat)" begin
+    # Test 7: Two MatrixMPIs, f returns scalar
+    @testset "Two MatrixMPIs -> scalar" begin
         A = MatrixMPI([1.0 2.0; 3.0 4.0])
         B = MatrixMPI([10.0 20.0; 30.0 40.0])
-        result = map_rows((a, b) -> collect(a) .+ collect(b), A, B)
-        # Row 1: [1,2] + [10,20] = [11,22] (column vector)
-        # Row 2: [3,4] + [30,40] = [33,44] (column vector)
-        # vcat: [11, 22, 33, 44]
-        expected = [11.0, 22.0, 33.0, 44.0]
+        result = map_rows((a, b) -> dot(a, b), A, B)
+        # Row 1: [1,2] · [10,20] = 10 + 40 = 50
+        # Row 2: [3,4] · [30,40] = 90 + 160 = 250
+        expected = [50.0, 250.0]
         @test Vector(result) ≈ expected
     end
 
-    # Test 9: Different partitions (repartition should align)
+    # Test 8: Different partitions (repartition should align)
     @testset "Different partitions" begin
         u = VectorMPI([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
         v = VectorMPI([10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
-        result = map_rows((a, b) -> a[1] + b[1], u, v)
+        result = map_rows((a, b) -> a + b, u, v)
         expected = [11.0, 22.0, 33.0, 44.0, 55.0, 66.0]
         @test Vector(result) ≈ expected
     end
 
-    # Test 10: Complex numbers
+    # Test 9: Complex numbers
     @testset "Complex numbers" begin
         v = VectorMPI(ComplexF64[1.0+2.0im, 3.0+4.0im, 5.0+6.0im, 7.0+8.0im])
-        result = map_rows(r -> abs2(r[1]), v)
+        result = map_rows(r -> abs2(r), v)
         expected = [5.0, 25.0, 61.0, 113.0]
         @test Vector(result) ≈ expected
     end
 
-    # Test 11: Variable-length vector output
-    @testset "Variable length vectors" begin
-        v = VectorMPI([1.0, 2.0, 3.0, 4.0])
-        # Each element produces a vector of length equal to its value
-        result = map_rows(r -> ones(Int(r[1])), v)
-        # 1 one, 2 ones, 3 ones, 4 ones = 10 total
-        expected = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    # Test 10: Complex matrix with SVector output
+    @testset "Complex matrix -> SVector" begin
+        A = MatrixMPI(ComplexF64[1.0+1.0im 2.0-1.0im; 3.0+2.0im 4.0-2.0im])
+        result = map_rows(r -> SVector(real(r[1]), imag(r[2])), A)
+        expected = [1.0 -1.0; 3.0 -2.0]
+        @test Matrix(result) ≈ expected
+    end
+
+    # Test 11: Identity transform (SVector pass-through)
+    @testset "Identity SVector transform" begin
+        A = MatrixMPI([1.0 2.0 3.0; 4.0 5.0 6.0])
+        result = map_rows(r -> r, A)  # r is already SVector
+        @test Matrix(result) ≈ Matrix(A)
+    end
+
+    # Test 12: Scalar from matrix row max
+    @testset "Row max" begin
+        A = MatrixMPI([1.0 5.0 3.0; 7.0 2.0 4.0; 3.0 3.0 9.0])
+        result = map_rows(r -> maximum(r), A)
+        expected = [5.0, 7.0, 9.0]
         @test Vector(result) ≈ expected
-        @test length(result) == 10
-    end
-
-    # Test 12: Lazy transpose wrapper
-    @testset "transpose wrapper" begin
-        A = MatrixMPI([1.0 2.0; 3.0 4.0; 5.0 6.0; 7.0 8.0])
-        result = map_rows(r -> transpose([1, 2, 3]), A)
-        expected = [1 2 3; 1 2 3; 1 2 3; 1 2 3]
-        @test Matrix(result) == expected
-        @test size(result) == (4, 3)
-    end
-
-    # Test 13: conj on real vector (should stay as column vector)
-    @testset "conj on real vector" begin
-        A = MatrixMPI([1.0 2.0; 3.0 4.0; 5.0 6.0])
-        result = map_rows(r -> conj([1, 2, 3]), A)
-        # conj of real vector is just the vector itself
-        expected = [1, 2, 3, 1, 2, 3, 1, 2, 3]
-        @test Vector(result) == expected
-        @test length(result) == 9
-    end
-
-    # Test 14: conj on complex vector (should stay as column vector)
-    @testset "conj on complex vector" begin
-        A = MatrixMPI([1.0 2.0; 3.0 4.0])
-        result = map_rows(r -> conj([1.0+1.0im, 2.0-1.0im]), A)
-        # conj flips imaginary part
-        expected = [1.0-1.0im, 2.0+1.0im, 1.0-1.0im, 2.0+1.0im]
-        @test Vector(result) == expected
-    end
-
-    # Test 15: adjoint of complex vector (row vector)
-    @testset "adjoint of complex vector" begin
-        A = MatrixMPI([1.0 2.0; 3.0 4.0])
-        result = map_rows(r -> [1.0+1.0im, 2.0-1.0im]', A)
-        # adjoint = conj + transpose, so row vector with conjugated values
-        expected = [1.0-1.0im 2.0+1.0im; 1.0-1.0im 2.0+1.0im]
-        @test Matrix(result) == expected
-        @test size(result) == (2, 2)
     end
 end
 

@@ -1224,7 +1224,7 @@ function Base.:*(A::SparseMatrixMPI{T,Ti,AV}, B::SparseMatrixMPI{T,Ti,AV}) where
     nzval = similar(A.nzval, nnz_result)
 
     # Adapt gathered B values (plan.AT.nzval is CPU) to A's backend
-    AT_nzval = _create_output_like(A.nzval, plan.AT.nzval)
+    AT_nzval = A.nzval isa Vector ? plan.AT.nzval : copyto!(similar(A.nzval, length(plan.AT.nzval)), plan.AT.nzval)
 
     # Execute symbolic multiplication (unified kernel)
     _execute_symbolic_multiply!(nzval, plan, AT_nzval, A.nzval)
@@ -1589,11 +1589,9 @@ function Base.:+(A::SparseMatrixMPI{T,Ti,AV}, B::SparseMatrixMPI{T,Ti,AV}) where
     nnz_result = plan.colptr[end] - 1
     nzval = similar(A.nzval, nnz_result)
 
-    # Adapt B_repart.nzval to A's backend (repartition always returns CPU)
-    B_nzval = _create_output_like(A.nzval, B_repart.nzval)
-
     # Execute addition directly into result buffer (unified kernel)
-    execute_addition!(nzval, plan, A.nzval, B_nzval)
+    # B_repart.nzval has same backend as A.nzval (repartition preserves backend)
+    execute_addition!(nzval, plan, A.nzval, B_repart.nzval)
 
     # Extract CSR components directly (rowptr=colptr, colval=rowval from plan)
     nrows_local = length(plan.colptr) - 1
@@ -1631,11 +1629,9 @@ function Base.:-(A::SparseMatrixMPI{T,Ti,AV}, B::SparseMatrixMPI{T,Ti,AV}) where
     nnz_result = plan.colptr[end] - 1
     nzval = similar(A.nzval, nnz_result)
 
-    # Adapt B_repart.nzval to A's backend (repartition always returns CPU)
-    B_nzval = _create_output_like(A.nzval, B_repart.nzval)
-
     # Execute subtraction directly into result buffer (unified kernel)
-    execute_subtraction!(nzval, plan, A.nzval, B_nzval)
+    # B_repart.nzval has same backend as A.nzval (repartition preserves backend)
+    execute_subtraction!(nzval, plan, A.nzval, B_repart.nzval)
 
     # Extract CSR components directly (rowptr=colptr, colval=rowval from plan)
     nrows_local = length(plan.colptr) - 1
@@ -1975,7 +1971,7 @@ function execute_plan!(plan::TransposePlan{T,Ti}, A::SparseMatrixMPI{T,Ti,AV}) w
     ncols_compressed = length(plan.col_indices)
 
     # Copy result to GPU if input was GPU
-    result_nzval = _create_output_like(A.nzval, compressed_result_AT.nzval)
+    result_nzval = A.nzval isa Vector ? compressed_result_AT.nzval : copyto!(similar(A.nzval, length(compressed_result_AT.nzval)), compressed_result_AT.nzval)
 
     # Convert structure arrays to target backend
     rowptr_target = _to_target_backend(compressed_result_AT.colptr, AV)
@@ -2260,8 +2256,8 @@ function Base.:*(A::SparseMatrixMPI{T,Ti,AV}, x::VectorMPI{T,AVX}) where {T,Ti,A
     # Get gathered data on CPU (MPI communication is always CPU)
     gathered_cpu = _gathered_cpu_buffer(plan)
 
-    # Adapt gathered data to A's backend and allocate result
-    gathered = _create_output_like(A.nzval, gathered_cpu)
+    # Adapt gathered data to A's backend
+    gathered = A.nzval isa Vector ? gathered_cpu : copyto!(similar(A.nzval, length(gathered_cpu)), gathered_cpu)
     y_local = similar(A.nzval, local_rows)
 
     # Unified SpMV kernel using pre-computed target arrays (works on CPU or GPU)

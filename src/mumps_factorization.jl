@@ -496,14 +496,12 @@ function _create_output_vector(::Type{Tin}, ::Type{AVin}, n::Int, partition) whe
     return _convert_vector_to_backend(v_dist, AVin)
 end
 
-# Convert VectorMPI to a specific backend type
-function _convert_vector_to_backend(v::VectorMPI{T, AV}, ::Type{AVtarget}) where {T, AV, AVtarget}
-    if AV === AVtarget
-        return v
-    end
-    # Need to convert - handled by mtl/cpu functions in extension
-    return _create_output_like(v, AVtarget)
-end
+# Convert VectorMPI to a specific backend type.
+# WARNING: This function exists ONLY for MUMPS, which is a CPU-only solver.
+# MUMPS requires GPU→CPU→GPU cycling. Do NOT use this for general operations.
+# The base module only defines the identity case (same type).
+# Extensions define CPU→GPU conversions (e.g., Vector → MtlVector).
+_convert_vector_to_backend(v::VectorMPI{T, AV}, ::Type{AV}) where {T, AV} = v
 
 """
     solve(F::MUMPSFactorizationMPI{Tin, AVin, Tinternal}, b::VectorMPI) where {Tin, AVin, Tinternal}
@@ -599,9 +597,6 @@ end
 
 # Fallback for CPU arrays
 _array_to_backend(v::Vector{T}, ::Type{<:Vector}) where T = v
-
-# Fallback for CPU VectorMPI (no conversion needed)
-_create_output_like(v::VectorMPI{T,<:Vector}, ::Type{<:Vector}) where T = v
 
 """
     Base.:\\(F::MUMPSFactorizationMPI, b::VectorMPI)
