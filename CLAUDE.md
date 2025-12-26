@@ -40,6 +40,27 @@ GPU acceleration is supported via Metal.jl (macOS) as a package extension.
 - `SparseMatrixMPI{T,Ti,AV}` where `AV` is `Vector{T}` (CPU) or `MtlVector{T}` (GPU) for the `nzval` array
 - Type aliases: `VectorMPI_CPU{T}`, `MatrixMPI_CPU{T}`, `SparseMatrixMPI_CPU{T,Ti}` for CPU-backed types
 
+### Creating Zero Arrays
+
+Use `Base.zeros` with the full parametric type or type alias:
+
+```julia
+# CPU zero arrays
+v = zeros(VectorMPI{Float64,Vector{Float64}}, 100)
+v = zeros(VectorMPI_CPU{Float64}, 100)  # Equivalent using type alias
+
+A = zeros(MatrixMPI{Float64,Matrix{Float64}}, 50, 30)
+A = zeros(MatrixMPI_CPU{Float64}, 50, 30)
+
+S = zeros(SparseMatrixMPI{Float64,Int,Vector{Float64}}, 100, 100)
+S = zeros(SparseMatrixMPI_CPU{Float64,Int}, 100, 100)
+
+# GPU zero arrays (requires Metal.jl loaded)
+using Metal
+v_gpu = zeros(VectorMPI{Float32,MtlVector{Float32}}, 100)
+A_gpu = zeros(MatrixMPI{Float32,MtlMatrix{Float32}}, 50, 30)
+```
+
 ### CPU Staging
 
 MPI communication always uses CPU buffers (no Metal-aware MPI exists). GPU data is staged through CPU:

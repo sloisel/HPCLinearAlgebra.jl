@@ -150,6 +150,26 @@ function LinearAlgebraMPI._convert_vector_to_backend(v::LinearAlgebraMPI.VectorM
 end
 
 # ============================================================================
+# Base.zeros Support
+# ============================================================================
+
+"""
+    _zeros_like(::Type{MtlVector{T}}, dims...) where T
+
+Create a zero MtlVector of the specified dimensions.
+Used by Base.zeros(VectorMPI{T,MtlVector{T}}, n).
+"""
+LinearAlgebraMPI._zeros_like(::Type{MtlVector{T}}, dims...) where T = Metal.zeros(T, dims...)
+
+"""
+    _zeros_like(::Type{MtlMatrix{T}}, dims...) where T
+
+Create a zero MtlMatrix of the specified dimensions.
+Used by Base.zeros(MatrixMPI{T,MtlMatrix{T}}, m, n).
+"""
+LinearAlgebraMPI._zeros_like(::Type{MtlMatrix{T}}, dims...) where T = Metal.zeros(T, dims...)
+
+# ============================================================================
 # MatrixPlan Index Array Support
 # ============================================================================
 

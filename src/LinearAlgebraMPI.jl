@@ -10,6 +10,7 @@ import LinearAlgebra
 import LinearAlgebra: tr, diag, triu, tril, Transpose, Adjoint, norm, opnorm, mul!, ldlt, BLAS, issymmetric, UniformScaling, dot, Symmetric
 
 export SparseMatrixMPI, MatrixMPI, VectorMPI, clear_plan_cache!, uniform_partition, repartition
+export VectorMPI_CPU, MatrixMPI_CPU, SparseMatrixMPI_CPU  # Type aliases for CPU-backed types
 export SparseMatrixCSR  # Type alias for Transpose{SparseMatrixCSC} (CSR storage format)
 export map_rows  # Row-wise map over distributed vectors/matrices
 export VectorMPI_local, MatrixMPI_local, SparseMatrixMPI_local  # Local constructors
@@ -958,6 +959,141 @@ function map_rows(f, A...)
     end
 end
 
+
+# ============================================================================
+# Base.zeros for Distributed Types
+# ============================================================================
+
+# Helper to create a zero array with the correct backend type
+# Base case: CPU arrays
+_zeros_like(::Type{Vector{T}}, dims...) where T = zeros(T, dims...)
+_zeros_like(::Type{Matrix{T}}, dims...) where T = zeros(T, dims...)
+
+# For GPU arrays, extensions will define additional methods
+
+"""
+    Base.zeros(::Type{VectorMPI{T,AV}}, n::Integer; comm=MPI.COMM_WORLD) where {T,AV}
+
+Create a distributed zero vector of length `n` with element type `T` and storage type `AV`.
+
+The vector is uniformly partitioned across MPI ranks.
+
+# Examples
+```julia
+# CPU zero vector
+v = zeros(VectorMPI{Float64,Vector{Float64}}, 100)
+
+# Using type alias
+v = zeros(VectorMPI_CPU{Float64}, 100)
+
+# GPU zero vector (requires Metal.jl loaded)
+using Metal
+v = zeros(VectorMPI{Float32,MtlVector{Float32}}, 100)
+```
+"""
+function Base.zeros(::Type{VectorMPI{T,AV}}, n::Integer;
+                    comm::MPI.Comm=MPI.COMM_WORLD) where {T,AV<:AbstractVector{T}}
+    nranks = MPI.Comm_size(comm)
+    rank = MPI.Comm_rank(comm)
+
+    partition = uniform_partition(n, nranks)
+    local_size = partition[rank + 2] - partition[rank + 1]
+
+    local_v = _zeros_like(AV, local_size)
+    hash = compute_partition_hash(partition)
+
+    return VectorMPI{T,AV}(hash, partition, local_v)
+end
+
+"""
+    Base.zeros(::Type{MatrixMPI{T,AM}}, m::Integer, n::Integer; comm=MPI.COMM_WORLD) where {T,AM}
+
+Create a distributed zero matrix of size `m × n` with element type `T` and storage type `AM`.
+
+The matrix is row-partitioned across MPI ranks.
+
+# Examples
+```julia
+# CPU zero matrix
+A = zeros(MatrixMPI{Float64,Matrix{Float64}}, 100, 50)
+
+# Using type alias
+A = zeros(MatrixMPI_CPU{Float64}, 100, 50)
+
+# GPU zero matrix (requires Metal.jl loaded)
+using Metal
+A = zeros(MatrixMPI{Float32,MtlMatrix{Float32}}, 100, 50)
+```
+"""
+function Base.zeros(::Type{MatrixMPI{T,AM}}, m::Integer, n::Integer;
+                    comm::MPI.Comm=MPI.COMM_WORLD) where {T,AM<:AbstractMatrix{T}}
+    nranks = MPI.Comm_size(comm)
+    rank = MPI.Comm_rank(comm)
+
+    row_partition = uniform_partition(m, nranks)
+    col_partition = uniform_partition(n, nranks)  # Used for transpose operations
+    local_nrows = row_partition[rank + 2] - row_partition[rank + 1]
+
+    local_A = _zeros_like(AM, local_nrows, n)
+    # Structural hash computed lazily
+
+    return MatrixMPI{T,AM}(nothing, row_partition, col_partition, local_A)
+end
+
+"""
+    Base.zeros(::Type{SparseMatrixMPI{T,Ti,AV}}, m::Integer, n::Integer; comm=MPI.COMM_WORLD) where {T,Ti,AV}
+
+Create a distributed zero sparse matrix of size `m × n`.
+
+A zero sparse matrix has no nonzero entries, so the resulting matrix has:
+- Empty `rowptr` (all ones)
+- Empty `colval` and `nzval`
+
+# Examples
+```julia
+# CPU zero sparse matrix
+A = zeros(SparseMatrixMPI{Float64,Int,Vector{Float64}}, 100, 100)
+
+# Using type alias
+A = zeros(SparseMatrixMPI_CPU{Float64,Int}, 100, 100)
+```
+"""
+function Base.zeros(::Type{SparseMatrixMPI{T,Ti,AV}}, m::Integer, n::Integer;
+                    comm::MPI.Comm=MPI.COMM_WORLD) where {T,Ti<:Integer,AV<:AbstractVector{T}}
+    nranks = MPI.Comm_size(comm)
+    rank = MPI.Comm_rank(comm)
+
+    row_partition = uniform_partition(m, nranks)
+    col_partition = uniform_partition(n, nranks)
+    local_nrows = row_partition[rank + 2] - row_partition[rank + 1]
+
+    # Empty sparse structure
+    rowptr = ones(Ti, local_nrows + 1)  # All rows have 0 entries
+    colval = Ti[]
+    nzval = _zeros_like(AV, 0)  # Empty but correct type
+    col_indices = Int[]  # No columns referenced
+
+    # For CPU, rowptr_target/colval_target are the same as rowptr/colval
+    # For GPU, they would be GPU copies (but empty arrays don't matter)
+    rowptr_target = rowptr
+    colval_target = colval
+
+    return SparseMatrixMPI{T,Ti,AV}(
+        nothing,  # Hash computed lazily
+        row_partition,
+        col_partition,
+        col_indices,
+        rowptr,
+        colval,
+        nzval,
+        local_nrows,
+        0,  # ncols_compressed = 0 (no columns referenced)
+        nothing,  # cached_transpose
+        true,  # cached_symmetric (zero matrix is symmetric)
+        rowptr_target,
+        colval_target
+    )
+end
 
 # ============================================================================
 # Precompilation Workload
