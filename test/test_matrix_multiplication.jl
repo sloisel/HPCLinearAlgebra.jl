@@ -30,6 +30,7 @@ ts = @testset QuietTestSet "Matrix Multiplication" begin
 
 for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     TOL = TestUtils.tolerance(T)
+    VT, ST, MT = TestUtils.expected_types(T, to_backend)
 
     println(io0(), "[test] Matrix multiplication ($T, $backend_name)")
 
@@ -49,7 +50,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
 
     Adist = to_backend(SparseMatrixMPI{T}(A))
     Bdist = to_backend(SparseMatrixMPI{T}(B))
-    Cdist = Adist * Bdist
+    Cdist = assert_type(Adist * Bdist, ST)
     C_ref = A * B
     C_ref_dist = to_backend(SparseMatrixMPI{T}(C_ref))
 
@@ -75,7 +76,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
 
     Adist2 = to_backend(SparseMatrixMPI{T}(A2))
     Bdist2 = to_backend(SparseMatrixMPI{T}(B2))
-    Cdist2 = Adist2 * Bdist2
+    Cdist2 = assert_type(Adist2 * Bdist2, ST)
     C_ref2 = A2 * B2
     C_ref_dist2 = to_backend(SparseMatrixMPI{T}(C_ref2))
 

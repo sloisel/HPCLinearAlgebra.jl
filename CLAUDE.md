@@ -86,6 +86,55 @@ Sparse matrices remain on CPU (Julia's `SparseMatrixCSC` doesn't support GPU arr
 - `ext/LinearAlgebraMPIMetalExt.jl` - Metal extension with `mtl()` and `cpu()` functions
 - Loaded automatically when `using Metal` before `using LinearAlgebraMPI`
 
+### Writing Unified CPU/GPU Functions
+
+**IMPORTANT:** Never write separate CPU and GPU code paths with `if AV <: Vector` or `if A.nzval isa Vector` branches. Use unified helper functions instead.
+
+**No mixed CPU/GPU operations:** Operations between CPU and GPU arrays are forbidden. Both operands must be on the same backend. Functions should error on mixed backends:
+```julia
+if (A_is_cpu != B_is_cpu)
+    error("Mixed CPU/GPU operations not supported")
+end
+```
+
+**Helper functions for unified code:**
+
+1. `_values_to_backend(cpu_values::Vector, template)` - Convert CPU values to template's backend:
+   - CPU template: returns `cpu_values` directly (no copy)
+   - GPU template: `copyto!(similar(template, T, length(cpu_values)), cpu_values)`
+
+2. `_to_target_backend(v::Vector, ::Type{AV})` - Convert CPU index vector to target type:
+   - `Type{Vector{T}}`: returns `v` directly (no copy)
+   - `Type{MtlVector{T}}`: returns GPU copy
+
+**Pattern for result construction (unified):**
+```julia
+# Values: use helper (no-op for CPU, copy for GPU)
+nzval = _values_to_backend(nzval_cpu, A.nzval)
+
+# Structure arrays: cache once, reuse forever
+# For CPU: caches reference to original (no allocation)
+# For GPU: caches GPU copy (allocated once)
+if plan.cached_rowptr_target === nothing
+    plan.cached_rowptr_target = _to_target_backend(plan.rowptr, AV)
+end
+if plan.cached_colval_target === nothing
+    plan.cached_colval_target = _to_target_backend(plan.colval, AV)
+end
+```
+
+**Pattern for values that change each call (e.g., gathered B values in A*B):**
+```julia
+# First call: create cache (reference for CPU, GPU buffer for GPU)
+if plan.cached_values === nothing
+    plan.cached_values = _values_to_backend(plan.cpu_values, A.nzval)
+end
+# Sync: no-op for CPU (cache === source), copy for GPU
+if !(plan.cached_values === plan.cpu_values)
+    copyto!(plan.cached_values, plan.cpu_values)
+end
+```
+
 ## Architecture
 
 LinearAlgebraMPI implements distributed sparse and dense matrix operations using MPI for parallel computing across multiple ranks. Supports both `Float64` and `ComplexF64` element types.

@@ -12,7 +12,7 @@ import LinearAlgebra: tr, diag, triu, tril, Transpose, Adjoint, norm, opnorm, mu
 export SparseMatrixMPI, MatrixMPI, VectorMPI, clear_plan_cache!, uniform_partition, repartition
 export VectorMPI_CPU, MatrixMPI_CPU, SparseMatrixMPI_CPU  # Type aliases for CPU-backed types
 export SparseMatrixCSR  # Type alias for Transpose{SparseMatrixCSC} (CSR storage format)
-export map_rows  # Row-wise map over distributed vectors/matrices
+export map_rows, map_rows_gpu, vertex_indices  # Row-wise map over distributed vectors/matrices
 export VectorMPI_local, MatrixMPI_local, SparseMatrixMPI_local  # Local constructors
 export mean  # Our mean function for SparseMatrixMPI and VectorMPI
 export io0   # Utility for rank-selective output
@@ -166,6 +166,7 @@ function mtl end
     cpu(v)
 
 Convert a distributed array from GPU to CPU storage.
+For already-CPU arrays, returns the input unchanged (no-op).
 """
 function cpu end
 
@@ -187,22 +188,38 @@ function clear_plan_cache!()
     if isdefined(@__MODULE__, :_dense_transpose_vector_plan_cache)
         empty!(_dense_transpose_vector_plan_cache)
     end
+    # Clear partition hash cache
+    if isdefined(@__MODULE__, :_partition_hash_cache)
+        empty!(_partition_hash_cache)
+    end
     # Also clear MUMPS analysis cache (defined in mumps_factorization.jl)
     if isdefined(@__MODULE__, :clear_mumps_analysis_cache!)
         clear_mumps_analysis_cache!()
     end
 end
 
+# Cache for partition hashes: objectid(partition) -> Blake3Hash
+# This avoids recomputing hashes for the same partition vector
+const _partition_hash_cache = Dict{UInt, Blake3Hash}()
+
 """
     compute_partition_hash(partition::Vector{Int}) -> Blake3Hash
 
-Compute a hash of a partition vector. Since partition vectors are identical
-across all ranks, no MPI communication is needed.
+Compute a hash of a partition vector, using a cache to avoid recomputation.
+Since partition vectors are typically reused (e.g., A.row_partition used in
+many operations), caching based on object identity provides significant speedup.
 """
 function compute_partition_hash(partition::Vector{Int})::Blake3Hash
+    oid = objectid(partition)
+    cached = get(_partition_hash_cache, oid, nothing)
+    if cached !== nothing
+        return cached
+    end
     ctx = Blake3Ctx()
     update!(ctx, reinterpret(UInt8, partition))
-    return Blake3Hash(digest(ctx))
+    hash = Blake3Hash(digest(ctx))
+    _partition_hash_cache[oid] = hash
+    return hash
 end
 
 """
@@ -244,6 +261,15 @@ include("indexing.jl")
 
 # Include MUMPS factorization module
 include("mumps_factorization.jl")
+
+# ============================================================================
+# CPU No-op Fallbacks (after types are defined)
+# ============================================================================
+
+# No-op fallbacks for already-CPU arrays
+cpu(v::VectorMPI{T,Vector{T}}) where T = v
+cpu(A::MatrixMPI{T,Matrix{T}}) where T = A
+cpu(A::SparseMatrixMPI{T,Ti,Vector{T}}) where {T,Ti} = A
 
 # ============================================================================
 # Symmetry Check
@@ -870,6 +896,35 @@ _to_svectors(M::AbstractMatrix{T}) where {T} = _matrix_to_svectors(M)
 _from_result(v::AbstractVector{SVector{K,T}}) where {K,T} = _svectors_to_matrix(v)
 _from_result(v::AbstractVector{T}) where {T<:Number} = v
 
+# ============================================================================
+# GPU kernel infrastructure for map_rows_gpu
+# ============================================================================
+
+"""
+    _map_rows_gpu_kernel(f, matrices...)
+
+Apply function `f` row-wise over matrices. Each row is converted to an SVector,
+`f` is applied, and results are collected into an output matrix.
+
+This is the CPU fallback implementation using broadcasting. The Metal extension
+overrides this for MtlMatrix inputs to use efficient GPU kernels.
+
+For VectorMPI inputs, the vector should be reshaped to a 1-column matrix before calling.
+"""
+function _map_rows_gpu_kernel(f, arg1::AbstractMatrix{T}, rest::AbstractMatrix...) where T
+    # Convert to SVector representation for broadcasting
+    local_arrays = (_matrix_to_svectors(arg1), map(_matrix_to_svectors, rest)...)
+
+    # Broadcast f over all local arrays
+    results = f.(local_arrays...)
+
+    # Convert results back to matrix
+    _from_result(results)
+end
+
+# CPU version (same as GPU kernel for CPU arrays)
+_map_rows_cpu_kernel(f, args...) = _map_rows_gpu_kernel(f, args...)
+
 """
     map_rows(f, A...)
 
@@ -917,8 +972,8 @@ w = VectorMPI([1.0, 2.0, 3.0, 4.0])
 result = map_rows((row, wi) -> sum(row) * wi, A, w)  # VectorMPI
 ```
 """
-function map_rows(f, A...)
-    isempty(A) && error("map_rows requires at least one argument")
+function map_rows_gpu(f, A...)
+    isempty(A) && error("map_rows_gpu requires at least one argument")
 
     # Get target partition from first argument
     target_partition = _get_row_partition(A[1])
@@ -926,26 +981,42 @@ function map_rows(f, A...)
     # Align all arguments to target partition
     aligned = map(a -> _align_to_partition(a, target_partition), A)
 
-    # Convert to SVector representation for broadcasting
-    # VectorMPI.v passes through, MatrixMPI.A gets transposed and reinterpreted
-    local_arrays = map(aligned) do a
-        if a isa VectorMPI
-            a.v  # Vector{T} - each element is a "row"
-        else
-            _to_svectors(a.A)  # Vector{SVector{K,T}} - each SVector is a row
+    # Check if all inputs are MatrixMPI (can use GPU kernel path)
+    all_matrices = all(a -> a isa MatrixMPI, aligned)
+
+    if all_matrices
+        # Extract raw matrices and use GPU kernel (specialized by Metal extension for MtlMatrix)
+        raw_matrices = map(a -> a.A, aligned)
+        local_result = _map_rows_gpu_kernel(f, raw_matrices...)
+    else
+        # Mixed VectorMPI/MatrixMPI: use broadcasting approach
+        # VectorMPI.v passes through, MatrixMPI.A gets transposed and reinterpreted
+        local_arrays = map(aligned) do a
+            if a isa VectorMPI
+                a.v  # Vector{T} - each element is a "row"
+            else
+                _to_svectors(a.A)  # Vector{SVector{K,T}} - each SVector is a row
+            end
         end
+
+        # Broadcast f over all local arrays
+        results = f.(local_arrays...)
+
+        # Convert results back to appropriate type
+        local_result = _from_result(results)
     end
-
-    # Broadcast f over all local arrays (GPU-friendly)
-    results = f.(local_arrays...)
-
-    # Convert results back to appropriate type
-    local_result = _from_result(results)
 
     # Wrap in MPI type using first argument's partition info
     first_arg = aligned[1]
     row_partition = first_arg isa VectorMPI ? first_arg.partition : first_arg.row_partition
-    hash = compute_partition_hash(row_partition)
+    # For VectorMPI, structural_hash == partition hash, so reuse directly
+    # For MatrixMPI, structural_hash includes more info, so just compute partition hash (cached)
+    if first_arg isa VectorMPI
+        hash = first_arg.structural_hash
+    else
+        # MatrixMPI: compute partition hash (uses cache)
+        hash = compute_partition_hash(row_partition)
+    end
 
     if local_result isa AbstractMatrix
         return MatrixMPI(
@@ -960,6 +1031,110 @@ function map_rows(f, A...)
             row_partition,
             local_result
         )
+    end
+end
+
+"""
+    map_rows(f, A...)
+
+Apply function `f` to corresponding rows of distributed arrays, with CPU fallback.
+
+This is the safe version that handles functions with arbitrary closures by
+converting GPU arrays to CPU, applying the function, and converting back.
+Use `map_rows_gpu` for performance-critical inner loops where `f` is isbits-compatible.
+
+# Arguments
+- `f`: Function to apply to each row (can capture non-isbits data)
+- `A...`: One or more distributed arrays (VectorMPI or MatrixMPI)
+
+# Returns
+- VectorMPI or MatrixMPI depending on the return type of `f`
+
+See also: [`map_rows_gpu`](@ref) for GPU-native version (requires isbits closures)
+"""
+function map_rows(f, A...)
+    isempty(A) && error("map_rows requires at least one argument")
+
+    # Convert all args to CPU
+    cpu_args = map(cpu, A)
+
+    # Apply function on CPU (handles arbitrary closures)
+    result_cpu = map_rows_gpu(f, cpu_args...)
+
+    # Convert back to original backend if needed
+    # Check if first arg was GPU - if so, convert result to GPU
+    first_arg = A[1]
+    if _is_gpu_array(first_arg)
+        return mtl(result_cpu)
+    else
+        return result_cpu
+    end
+end
+
+# Helper to detect GPU arrays
+_is_gpu_array(::VectorMPI{T,Vector{T}}) where T = false
+_is_gpu_array(::MatrixMPI{T,Matrix{T}}) where T = false
+_is_gpu_array(::VectorMPI) = true  # Non-CPU vector types (MtlVector, etc.)
+_is_gpu_array(::MatrixMPI) = true  # Non-CPU matrix types (MtlMatrix, etc.)
+
+"""
+    vertex_indices(A::AbstractVectorMPI)
+
+Create a VectorMPI of vertex indices (1:n) with the same partitioning and backend as `A`.
+
+This is useful for barrier functions that need to index into captured arrays.
+The indices are created on the same device (CPU/GPU) as the input array.
+
+# Arguments
+- `A`: A distributed array whose partitioning and backend to match
+
+# Returns
+- VectorMPI{Int,AV} where AV matches the integer array type for A's backend
+
+# Example
+```julia
+Dz = ...  # VectorMPI on GPU
+indices = vertex_indices(Dz)  # GPU VectorMPI of 1:n
+map_rows_gpu(f, indices, Dz)  # f receives (j, Dz[j,:])
+```
+"""
+function vertex_indices(A::VectorMPI{T,AV}) where {T,AV}
+    # Get this rank's local row range (global indices)
+    rank = MPI.Comm_rank(MPI.COMM_WORLD)
+    start_idx = A.partition[rank + 1]
+    end_idx = A.partition[rank + 2] - 1
+
+    # Create local indices as global row numbers for this rank
+    local_indices = collect(start_idx:end_idx)
+
+    # VectorMPI_local computes partition from local sizes via MPI
+    indices_cpu = VectorMPI_local(local_indices)
+
+    # Convert to same backend as A
+    if _is_gpu_array(A)
+        return mtl(indices_cpu)
+    else
+        return indices_cpu
+    end
+end
+
+function vertex_indices(A::MatrixMPI{T,AM}) where {T,AM}
+    # Get this rank's local row range (global indices)
+    rank = MPI.Comm_rank(MPI.COMM_WORLD)
+    start_idx = A.row_partition[rank + 1]
+    end_idx = A.row_partition[rank + 2] - 1
+
+    # Create local indices as global row numbers for this rank
+    local_indices = collect(start_idx:end_idx)
+
+    # VectorMPI_local computes partition from local sizes via MPI
+    indices_cpu = VectorMPI_local(local_indices)
+
+    # Convert to same backend as A
+    if _is_gpu_array(A)
+        return mtl(indices_cpu)
+    else
+        return indices_cpu
     end
 end
 

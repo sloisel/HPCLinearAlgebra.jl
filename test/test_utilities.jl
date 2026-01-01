@@ -66,12 +66,13 @@ end
 # Parameterized tests for type conversions
 for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     TOL = TestUtils.tolerance(T)
+    VT, ST, MT = TestUtils.expected_types(T, to_backend)
 
     println(io0(), "[test] Vector conversion roundtrip ($T, $backend_name)")
 
     # Test Vector conversion: native -> MPI -> native (bit-for-bit)
     v_original = T.([1.5, -2.3, 3.7, 4.1, -5.9, 6.2, 7.8, -8.4, 9.0, 10.1])
-    v_mpi = to_backend(VectorMPI(v_original))
+    v_mpi = assert_type(to_backend(VectorMPI(v_original)), VT)
     v_back = Vector(v_mpi)
     @test norm(v_back - v_original) < TOL
     @test eltype(v_back) == T
@@ -87,7 +88,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
                      13.3 14.4 15.5 16.6;
                      17.7 18.8 19.9 20.0;
                      21.1 22.2 23.3 24.4])
-    M_mpi = to_backend(MatrixMPI(M_original))
+    M_mpi = assert_type(to_backend(MatrixMPI(M_original)), MT)
     M_back = Matrix(M_mpi)
     @test norm(M_back - M_original) < TOL
     @test eltype(M_back) == T
@@ -104,7 +105,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
                11.1, -12.2, 13.3, -14.4, 15.5, -16.6, 17.7, -18.8, 19.9, -20.0])
     S_original = sparse(I_sp, J_sp, V_sp, 15, 20)
 
-    S_mpi = to_backend(SparseMatrixMPI{T}(S_original))
+    S_mpi = assert_type(to_backend(SparseMatrixMPI{T}(S_original)), ST)
     S_back = SparseMatrixCSC(S_mpi)
 
     @test norm(S_back - S_original, Inf) < TOL

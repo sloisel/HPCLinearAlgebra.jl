@@ -60,14 +60,24 @@ mutable struct MatrixMPI{T,AM<:AbstractMatrix{T}} <: AbstractMatrix{T}
     row_partition::Vector{Int}
     col_partition::Vector{Int}
     A::AM
+    # Inner constructor that takes all arguments
+    function MatrixMPI{T,AM}(hash::OptionalBlake3Hash, row_partition::Vector{Int}, col_partition::Vector{Int}, A::AM) where {T,AM<:AbstractMatrix{T}}
+        new{T,AM}(hash, row_partition, col_partition, A)
+    end
 end
 
 # Type alias for CPU-backed MatrixMPI (default, backwards compatible)
 const MatrixMPI_CPU{T} = MatrixMPI{T,Matrix{T}}
 
-# Convenience constructor that infers AM from the matrix type
-MatrixMPI{T}(hash::OptionalBlake3Hash, row_partition::Vector{Int}, col_partition::Vector{Int}, A::AM) where {T,AM<:AbstractMatrix{T}} =
+# Convenience constructor that infers AM from the matrix type (different signature: one type param)
+function MatrixMPI{T}(hash::OptionalBlake3Hash, row_partition::Vector{Int}, col_partition::Vector{Int}, A::AM) where {T,AM<:AbstractMatrix{T}}
     MatrixMPI{T,AM}(hash, row_partition, col_partition, A)
+end
+
+# Constructor that infers both T and AM from the matrix (different signature: no type params)
+function MatrixMPI(hash::OptionalBlake3Hash, row_partition::Vector{Int}, col_partition::Vector{Int}, A::AM) where {T,AM<:AbstractMatrix{T}}
+    MatrixMPI{T,AM}(hash, row_partition, col_partition, A)
+end
 
 # Adapt.jl support for converting MatrixMPI between backends
 function Adapt.adapt_structure(to, M::MatrixMPI{T,AM}) where {T,AM}
@@ -572,31 +582,27 @@ end
 
 In-place dense matrix-vector multiplication: y = A * x.
 
-For GPU vectors with CPU matrices, the multiply is performed on CPU and the result is copied to y.v.
-For GPU vectors with GPU matrices, the multiply uses GPU BLAS.
+Requires matching backends: CPU matrix with CPU vectors, or GPU matrix with GPU vectors.
 """
 function LinearAlgebra.mul!(y::VectorMPI{T,AV}, A::MatrixMPI{T,AM}, x::VectorMPI{T,AV}) where {T,AM,AV}
+    # Check backend consistency
+    matrix_is_cpu = AM <: Matrix
+    vector_is_cpu = AV <: Vector
+    if matrix_is_cpu != vector_is_cpu
+        error("Mixed CPU/GPU operations not supported: matrix is $(matrix_is_cpu ? "CPU" : "GPU"), vector is $(vector_is_cpu ? "CPU" : "GPU")")
+    end
+
     plan = get_dense_vector_plan(A, x)
     execute_plan!(plan, x)
 
-    # Check if matrix is on GPU
-    if AM <: Matrix
-        # Matrix is on CPU - use CPU buffer for multiply
+    if matrix_is_cpu
+        # CPU path
         y_local_cpu = Vector{T}(undef, length(y.v))
         LinearAlgebra.mul!(y_local_cpu, A.A, plan.gathered_cpu)
         copyto!(y.v, y_local_cpu)
     else
-        # Matrix is on GPU
-        if plan.gathered isa Vector
-            # Input vector was CPU - copy gathered to GPU for the multiply
-            gathered_gpu = copyto!(similar(A.A, length(plan.gathered_cpu)), plan.gathered_cpu)
-            y_local_gpu = similar(A.A, length(y.v))
-            LinearAlgebra.mul!(y_local_gpu, A.A, gathered_gpu)
-            copyto!(y.v, Array(y_local_gpu))  # Copy result back to CPU
-        else
-            # Input vector was GPU - use GPU gathered directly
-            LinearAlgebra.mul!(y.v, A.A, plan.gathered)
-        end
+        # GPU path
+        LinearAlgebra.mul!(y.v, A.A, plan.gathered)
     end
     return y
 end
@@ -605,12 +611,16 @@ end
     Base.:*(A::MatrixMPI{T,AM}, x::VectorMPI{T,AV}) where {T,AM,AV}
 
 Dense matrix-vector multiplication returning a new VectorMPI.
-The result has the same row partition as A and same storage type as x.
-
-For GPU vectors with CPU matrices, the multiply is performed on CPU and
-the result is copied to GPU storage.
+The result has the same row partition as A and same storage type.
 """
 function Base.:*(A::MatrixMPI{T,AM}, x::VectorMPI{T,AV}) where {T,AM,AV}
+    # Check backend consistency
+    matrix_is_cpu = AM <: Matrix
+    vector_is_cpu = AV <: Vector
+    if matrix_is_cpu != vector_is_cpu
+        error("Mixed CPU/GPU operations not supported: matrix is $(matrix_is_cpu ? "CPU" : "GPU"), vector is $(vector_is_cpu ? "CPU" : "GPU")")
+    end
+
     rank = MPI.Comm_rank(MPI.COMM_WORLD)
     local_rows = A.row_partition[rank + 2] - A.row_partition[rank + 1]
 
@@ -624,24 +634,14 @@ function Base.:*(A::MatrixMPI{T,AM}, x::VectorMPI{T,AV}) where {T,AM,AV}
     # Execute the plan to gather vector elements
     execute_plan!(plan, x)
 
-    # Check if matrix is on GPU
-    if AM <: Matrix
-        # Matrix is on CPU - compute on CPU, then copy to GPU if needed
-        y_local_cpu = Vector{T}(undef, local_rows)
-        LinearAlgebra.mul!(y_local_cpu, A.A, plan.gathered_cpu)
-        # Copy to GPU if input was GPU
-        y_v = x.v isa Vector ? y_local_cpu : copyto!(similar(x.v, local_rows), y_local_cpu)
+    if matrix_is_cpu
+        # CPU path
+        y_v = Vector{T}(undef, local_rows)
+        LinearAlgebra.mul!(y_v, A.A, plan.gathered_cpu)
     else
-        # Matrix is on GPU
+        # GPU path
         y_v = similar(A.A, local_rows)
-        if plan.gathered isa Vector
-            # Input vector was CPU - copy gathered to GPU for the multiply
-            gathered_gpu = copyto!(similar(A.A, length(plan.gathered_cpu)), plan.gathered_cpu)
-            LinearAlgebra.mul!(y_v, A.A, gathered_gpu)
-        else
-            # Input vector was GPU - use GPU gathered directly
-            LinearAlgebra.mul!(y_v, A.A, plan.gathered)
-        end
+        LinearAlgebra.mul!(y_v, A.A, plan.gathered)
     end
 
     return VectorMPI{T,AV}(
@@ -844,6 +844,9 @@ function execute_plan!(plan::DenseTransposePlan{T}, A::MatrixMPI{T}) where T
     my_row_start = A.row_partition[rank+1]
     result_row_start = plan.row_partition[rank+1]
 
+    # Stage GPU data to CPU for scalar indexing (MPI requires CPU buffers anyway)
+    A_local = Array(A.A)
+
     # Step 1: Copy local values (transpose the block)
     # A^T[local_row_range, local_col_range] = transpose(A[1:nrows, result_row_start:result_row_end])
     if !isempty(plan.local_row_range) && !isempty(plan.local_col_range)
@@ -851,7 +854,7 @@ function execute_plan!(plan::DenseTransposePlan{T}, A::MatrixMPI{T}) where T
         for (dst_col_idx, src_row) in enumerate(plan.local_col_range)
             local_src_row = src_row - my_row_start + 1
             for (dst_row_idx, src_col) in enumerate(local_A_cols)
-                plan.AT[dst_row_idx, dst_col_idx + my_row_start - 1] = A.A[local_src_row, src_col]
+                plan.AT[dst_row_idx, dst_col_idx + my_row_start - 1] = A_local[local_src_row, src_col]
             end
         end
     end
@@ -866,7 +869,7 @@ function execute_plan!(plan::DenseTransposePlan{T}, A::MatrixMPI{T}) where T
         # Order must match unpack: outer loop over source rows, inner loop over columns
         for local_row in row_range
             for c in col_range
-                buf[buf_idx] = A.A[local_row, c]
+                buf[buf_idx] = A_local[local_row, c]
                 buf_idx += 1
             end
         end
@@ -908,7 +911,14 @@ function execute_plan!(plan::DenseTransposePlan{T}, A::MatrixMPI{T}) where T
             plan.row_partition, plan.col_partition, size(result_AT), comm)
     end
 
-    return MatrixMPI{T}(plan.structural_hash, plan.row_partition, plan.col_partition, result_AT)
+    # Convert result to match input array type (CPU or GPU)
+    AM = typeof(A.A)
+    if AM !== Matrix{T}
+        # Input was GPU - convert result back to GPU
+        result_AT_gpu = copyto!(similar(A.A, size(result_AT)), result_AT)
+        return MatrixMPI{T,AM}(plan.structural_hash, plan.row_partition, plan.col_partition, result_AT_gpu)
+    end
+    return MatrixMPI{T,AM}(plan.structural_hash, plan.row_partition, plan.col_partition, result_AT)
 end
 
 """
@@ -1183,12 +1193,18 @@ function get_dense_transpose_vector_plan(A::MatrixMPI{T}, x::VectorMPI{T,AV}) wh
 end
 
 """
-    Base.:*(At::Transpose{T,<:MatrixMPI{T}}, x::VectorMPI{T,AV}) where {T,AV}
+    Base.:*(At::Transpose{T,MatrixMPI{T,AM}}, x::VectorMPI{T,AV}) where {T,AM,AV}
 
 Compute transpose(A) * x without materializing the transpose.
-For GPU vectors, computation is done on CPU (matrix is on CPU) and result copied to GPU.
 """
-function Base.:*(At::Transpose{T,<:MatrixMPI{T}}, x::VectorMPI{T,AV}) where {T,AV}
+function Base.:*(At::Transpose{T,MatrixMPI{T,AM}}, x::VectorMPI{T,AV}) where {T,AM,AV}
+    # Check backend consistency
+    matrix_is_cpu = AM <: Matrix
+    vector_is_cpu = AV <: Vector
+    if matrix_is_cpu != vector_is_cpu
+        error("Mixed CPU/GPU operations not supported: matrix is $(matrix_is_cpu ? "CPU" : "GPU"), vector is $(vector_is_cpu ? "CPU" : "GPU")")
+    end
+
     A = At.parent
     comm = MPI.COMM_WORLD
     rank = MPI.Comm_rank(comm)
@@ -1209,16 +1225,16 @@ function Base.:*(At::Transpose{T,<:MatrixMPI{T}}, x::VectorMPI{T,AV}) where {T,A
     my_row_start = A.row_partition[rank+1]
     my_row_end = A.row_partition[rank+2] - 1
 
-    # Check if matrix is on GPU
-    if A.A isa Matrix
-        # Matrix is on CPU - use CPU buffer
+    if matrix_is_cpu
+        # CPU path
         local_gathered = @view plan.gathered_cpu[my_row_start:my_row_end]
         partial_result = transpose(A.A) * local_gathered
     else
-        # Matrix is on GPU - copy gathered portion to GPU
-        # Must convert SubArray to Vector first for GPU copyto!
-        local_gathered_cpu = Vector(plan.gathered_cpu[my_row_start:my_row_end])
-        local_gathered_gpu = copyto!(similar(A.A, length(local_gathered_cpu)), local_gathered_cpu)
+        # GPU path - use GPU gathered directly
+        local_gathered = @view plan.gathered[my_row_start:my_row_end]
+        # For Metal, views may not work directly - copy to contiguous array
+        local_gathered_gpu = similar(A.A, length(local_gathered))
+        copyto!(local_gathered_gpu, Array(local_gathered))
         partial_result_gpu = transpose(A.A) * local_gathered_gpu
         partial_result = Array(partial_result_gpu)  # Need CPU for MPI.Allreduce
     end
@@ -1231,8 +1247,8 @@ function Base.:*(At::Transpose{T,<:MatrixMPI{T}}, x::VectorMPI{T,AV}) where {T,A
     my_col_end = A.col_partition[rank+2] - 1
     local_result_cpu = full_result[my_col_start:my_col_end]
 
-    # Copy to GPU if input was GPU
-    local_result = x.v isa Vector ? local_result_cpu : copyto!(similar(x.v, length(local_result_cpu)), local_result_cpu)
+    # Copy to GPU if needed
+    local_result = vector_is_cpu ? local_result_cpu : copyto!(similar(x.v, length(local_result_cpu)), local_result_cpu)
 
     # Create result vector (partition is immutable, no need to copy)
     y = VectorMPI{T,AV}(
@@ -1747,11 +1763,51 @@ A_repart = repartition(A, new_partition)
 ```
 """
 function repartition(A::MatrixMPI{T}, p::Vector{Int}) where T
-    # Fast path: partition unchanged
-    if A.row_partition == p
+    # Fast path: partition unchanged (identity check first, then element-wise)
+    if A.row_partition === p || A.row_partition == p
         return A
     end
 
     plan = get_repartition_plan(A, p)
     return execute_plan!(plan, A)
 end
+
+# ============================================================================
+# Scalar multiplication for MatrixMPI (GPU-compatible)
+# ============================================================================
+
+"""
+    Base.:*(α::Number, A::MatrixMPI{T,AM}) where {T,AM}
+
+Scalar-matrix multiplication. GPU-compatible: uses the underlying array's
+multiplication which dispatches to GPU kernels.
+"""
+function Base.:*(α::Number, A::MatrixMPI{T,AM}) where {T,AM}
+    new_A = T(α) * A.A
+    MatrixMPI{T,typeof(new_A)}(nothing, A.row_partition, A.col_partition, new_A)
+end
+
+"""
+    Base.:*(A::MatrixMPI{T,AM}, α::Number) where {T,AM}
+
+Matrix-scalar multiplication. GPU-compatible.
+"""
+function Base.:*(A::MatrixMPI{T,AM}, α::Number) where {T,AM}
+    new_A = A.A * T(α)
+    MatrixMPI{T,typeof(new_A)}(nothing, A.row_partition, A.col_partition, new_A)
+end
+
+"""
+    Base.:/(A::MatrixMPI{T,AM}, α::Number) where {T,AM}
+
+Matrix-scalar division. GPU-compatible.
+"""
+function Base.:/(A::MatrixMPI{T,AM}, α::Number) where {T,AM}
+    new_A = A.A / T(α)
+    MatrixMPI{T,typeof(new_A)}(nothing, A.row_partition, A.col_partition, new_A)
+end
+
+# Broadcasting: scalar .* matrix - redirect to scalar * matrix
+Base.broadcasted(::typeof(*), α::Number, A::MatrixMPI) = α * A
+Base.broadcasted(::typeof(*), A::MatrixMPI, α::Number) = A * α
+Base.broadcasted(::typeof(/), A::MatrixMPI, α::Number) = A / α

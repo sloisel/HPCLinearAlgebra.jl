@@ -21,14 +21,24 @@ struct VectorMPI{T,AV<:AbstractVector{T}} <: AbstractVector{T}
     structural_hash::Blake3Hash
     partition::Vector{Int}
     v::AV
+    # Inner constructor that takes all arguments
+    function VectorMPI{T,AV}(hash::Blake3Hash, partition::Vector{Int}, v::AV) where {T,AV<:AbstractVector{T}}
+        new{T,AV}(hash, partition, v)
+    end
 end
 
 # Type alias for CPU-backed VectorMPI (default, backwards compatible)
 const VectorMPI_CPU{T} = VectorMPI{T,Vector{T}}
 
-# Convenience constructor that infers AV from the vector type
-VectorMPI{T}(hash::Blake3Hash, partition::Vector{Int}, v::AV) where {T,AV<:AbstractVector{T}} =
+# Convenience constructor that infers AV from the vector type (different signature: one type param)
+function VectorMPI{T}(hash::Blake3Hash, partition::Vector{Int}, v::AV) where {T,AV<:AbstractVector{T}}
     VectorMPI{T,AV}(hash, partition, v)
+end
+
+# Constructor that infers both T and AV from the vector (different signature: no type params)
+function VectorMPI(hash::Blake3Hash, partition::Vector{Int}, v::AV) where {T,AV<:AbstractVector{T}}
+    VectorMPI{T,AV}(hash, partition, v)
+end
 
 # Get the backend for a VectorMPI
 function get_backend(v::VectorMPI{T,AV}) where {T,AV}
@@ -123,10 +133,54 @@ _create_output_like(::AV, result::AV) where {T,AV<:AbstractVector{T}} = result
 _ensure_cpu(v::Vector) = v
 _ensure_cpu(v::AbstractVector) = Array(v)
 
+# Helper to copy only a range from vector to CPU (view for CPU, copy range for GPU)
+# Used by execute_plan! to avoid copying entire GPU arrays
+_copy_range_to_cpu(v::Vector, range::UnitRange) = view(v, range)
+_copy_range_to_cpu(v::AbstractVector, range::UnitRange) = Array(view(v, range))
+
 # Helper to copy CPU data to destination buffer (no-op if same, copy if different)
 # Used after MPI communication to transfer results back to GPU if needed
 _copy_to_output!(dst::Vector{T}, src::Vector{T}) where T = (dst === src || copyto!(dst, src); dst)
 _copy_to_output!(dst::AV, src::Vector{T}) where {T,AV<:AbstractVector{T}} = copyto!(dst, src)
+
+# ============================================================================
+# GPU Gather Kernel
+# ============================================================================
+
+"""
+Gather kernel: gathered[dst[i]] = x[src[i]] for i = 1:length(src)
+Used to avoid copying entire GPU arrays for VectorPlan execution.
+"""
+@kernel function _gather_kernel!(gathered, x, src_indices, dst_indices)
+    i = @index(Global)
+    @inbounds gathered[dst_indices[i]] = x[src_indices[i]]
+end
+
+"""
+    _execute_gather_gpu!(gathered, x, src_indices_gpu, dst_indices_gpu)
+
+Execute GPU gather using a KernelAbstractions kernel.
+"""
+function _execute_gather_gpu!(gathered::AbstractVector{T}, x::AbstractVector{T},
+                               src_indices::AbstractVector, dst_indices::AbstractVector) where T
+    n = length(src_indices)
+    if n == 0
+        return gathered
+    end
+    backend = KernelAbstractions.get_backend(gathered)
+    kernel = _gather_kernel!(backend)
+    kernel(gathered, x, src_indices, dst_indices; ndrange=n)
+    return gathered
+end
+
+"""
+    _to_gpu_indices(gpu_array, cpu_indices)
+
+Convert CPU index array to same GPU backend as gpu_array.
+Falls back to CPU-compatible type if conversion not possible.
+"""
+_to_gpu_indices(::Vector, indices::Vector{Int}) = indices
+_to_gpu_indices(gpu_array::AbstractVector, indices::Vector{Int}) = _to_target_backend(indices, typeof(gpu_array))
 
 """
     VectorPlan{T,AV}
@@ -167,6 +221,12 @@ mutable struct VectorPlan{T,AV<:AbstractVector{T}}
     # Cached partition hash for result vector (computed lazily on first use)
     result_partition_hash::OptionalBlake3Hash
     result_partition::Union{Nothing, Vector{Int}}
+    # Cached GPU buffers for SpMV (lazily allocated on first use)
+    cached_gathered_target::Union{Nothing, AbstractVector{T}}  # Gathered in matrix backend
+    cached_y_local::Union{Nothing, AbstractVector{T}}          # Result buffer
+    # Cached GPU index arrays for gather kernel (lazily allocated on first use)
+    cached_local_src_gpu::Union{Nothing, AbstractVector{Int}}
+    cached_local_dst_gpu::Union{Nothing, AbstractVector{Int}}
 end
 
 # Type alias for CPU-backed VectorPlan (backwards compatible)
@@ -288,7 +348,9 @@ function VectorPlan(target_partition::Vector{Int}, source::VectorMPI{T,AV}) wher
         send_rank_ids, send_indices_final, send_bufs, send_reqs,
         recv_rank_ids, recv_bufs, recv_reqs, recv_perm_final,
         local_src_indices, local_dst_indices, gathered, gathered_cpu,
-        nothing, nothing  # result_partition_hash, result_partition (computed lazily)
+        nothing, nothing,  # result_partition_hash, result_partition (computed lazily)
+        nothing, nothing,  # cached_gathered_target, cached_y_local (for SpMV)
+        nothing, nothing   # cached_local_src_gpu, cached_local_dst_gpu (for GPU gather)
     )
 end
 
@@ -300,10 +362,38 @@ Returns plan.gathered containing x[A.col_indices] for the associated matrix A.
 
 Works uniformly for CPU and GPU vectors - MPI communication always uses CPU
 buffers, with automatic staging for GPU arrays.
+
+GPU optimization: When no MPI communication is needed (all data is local),
+uses a GPU gather kernel to avoid copying entire arrays to CPU.
 """
 function execute_plan!(plan::VectorPlan{T,AV}, x::VectorMPI{T,AV}) where {T,AV}
     comm = MPI.COMM_WORLD
 
+    # Check if we can use GPU-optimized path (no MPI communication needed)
+    no_mpi_needed = isempty(plan.send_rank_ids) && isempty(plan.recv_rank_ids)
+    is_gpu = !(x.v isa Vector)
+
+    if no_mpi_needed && is_gpu && !isempty(plan.local_src_indices)
+        # GPU path: Use gather kernel directly, no CPU round-trip
+        # Cache GPU index arrays on first use
+        if plan.cached_local_src_gpu === nothing
+            plan.cached_local_src_gpu = _to_gpu_indices(x.v, plan.local_src_indices)
+        end
+        if plan.cached_local_dst_gpu === nothing
+            plan.cached_local_dst_gpu = _to_gpu_indices(x.v, plan.local_dst_indices)
+        end
+
+        # Execute GPU gather directly into plan.gathered
+        _execute_gather_gpu!(plan.gathered, x.v,
+                            plan.cached_local_src_gpu, plan.cached_local_dst_gpu)
+
+        # Note: gathered_cpu is NOT populated here for performance.
+        # Callers that need CPU data should use ensure_gathered_cpu!(plan) below.
+
+        return plan.gathered
+    end
+
+    # CPU path: Required for MPI communication or CPU vectors
     # Get CPU data for MPI operations (no-op for CPU, copy for GPU)
     x_cpu = _ensure_cpu(x.v)
 
@@ -346,6 +436,7 @@ function execute_plan!(plan::VectorPlan{T,AV}, x::VectorMPI{T,AV}) where {T,AV}
 
     return plan.gathered
 end
+
 
 # ============================================================================
 # VectorRepartitionPlan: Repartition a VectorMPI to a new partition
@@ -594,8 +685,8 @@ v_repart = repartition(v, new_partition)
 ```
 """
 function repartition(x::VectorMPI{T}, p::Vector{Int}) where T
-    # Fast path: partition unchanged
-    if x.partition == p
+    # Fast path: partition unchanged (identity check first, then element-wise)
+    if x.partition === p || x.partition == p
         return x
     end
 
@@ -681,8 +772,8 @@ d = dot(x, y)
 function LinearAlgebra.dot(x::VectorMPI{T}, y::VectorMPI{T}) where T
     comm = MPI.COMM_WORLD
 
-    # If partitions match, use local dot product directly
-    if x.partition == y.partition
+    # If partitions match (compare hashes for efficiency), use local dot product directly
+    if x.structural_hash == y.structural_hash
         local_dot = dot(x.v, y.v)
         return MPI.Allreduce(local_dot, MPI.SUM, comm)
     else
@@ -748,7 +839,7 @@ Add two distributed vectors. If partitions differ, v is aligned to u's partition
 The result has u's partition.
 """
 function Base.:+(u::VectorMPI{T}, v::VectorMPI{T}) where T
-    if u.partition == v.partition
+    if u.structural_hash == v.structural_hash
         return VectorMPI{T}(u.structural_hash, u.partition, u.v .+ v.v)
     else
         # Align v to u's partition using repartition
@@ -764,7 +855,7 @@ Subtract two distributed vectors. If partitions differ, v is aligned to u's part
 The result has u's partition.
 """
 function Base.:-(u::VectorMPI{T}, v::VectorMPI{T}) where T
-    if u.partition == v.partition
+    if u.structural_hash == v.structural_hash
         return VectorMPI{T}(u.structural_hash, u.partition, u.v .- v.v)
     else
         # Align v to u's partition using repartition
@@ -1018,7 +1109,8 @@ Prepare a broadcast argument for local computation.
 - Scalar or other: return as-is
 """
 function _prepare_broadcast_arg(v::VectorMPI, ref_partition, comm)
-    if v.partition == ref_partition
+    # Use identity check first (fast), then element-wise comparison
+    if v.partition === ref_partition || v.partition == ref_partition
         return v.v
     else
         # Align to reference partition using repartition

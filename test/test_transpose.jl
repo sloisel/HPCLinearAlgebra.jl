@@ -30,6 +30,7 @@ ts = @testset QuietTestSet "Transpose" begin
 
 for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     TOL = TestUtils.tolerance(T)
+    VT, ST, MT = TestUtils.expected_types(T, to_backend)
 
     println(io0(), "[test] Transpose ($T, $backend_name)")
 
@@ -41,7 +42,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
 
     Adist = to_backend(SparseMatrixMPI{T}(A))
     plan = LinearAlgebraMPI.TransposePlan(Adist)
-    ATdist = LinearAlgebraMPI.execute_plan!(plan, Adist)
+    ATdist = assert_type(LinearAlgebraMPI.execute_plan!(plan, Adist), ST)
     AT_ref = sparse(transpose(A))
     AT_ref_dist = to_backend(SparseMatrixMPI{T}(AT_ref))
 
@@ -66,7 +67,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
 
     Adist2 = to_backend(SparseMatrixMPI{T}(A2))
     plan2 = LinearAlgebraMPI.TransposePlan(Adist2)
-    ATdist2 = LinearAlgebraMPI.execute_plan!(plan2, Adist2)
+    ATdist2 = assert_type(LinearAlgebraMPI.execute_plan!(plan2, Adist2), ST)
     AT_ref2 = sparse(transpose(A2))
     AT_ref_dist2 = to_backend(SparseMatrixMPI{T}(AT_ref2))
 

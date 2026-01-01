@@ -32,6 +32,7 @@ ts = @testset QuietTestSet "Sparse API" begin
 
 for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     TOL = TestUtils.tolerance(T)
+    VT, ST, MT = TestUtils.expected_types(T, to_backend)
 
     println(io0(), "[test] Structural queries ($T, $backend_name)")
 
@@ -52,7 +53,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
 
     println(io0(), "[test] Copy ($T, $backend_name)")
 
-    B = copy(Adist)
+    B = assert_type(copy(Adist), ST)
     b_nnz = nnz(B)
     b_size = size(B)
     @test b_nnz == ref_nnz
@@ -64,33 +65,39 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
 
     println(io0(), "[test] Element-wise operations ($T, $backend_name)")
 
+    # abs and abs2 return real types (Float64 for ComplexF64, Float32 for ComplexF32)
+    RT = real(T)  # Real type for abs/abs2 results
+    _, ST_real, _ = TestUtils.expected_types(RT, to_backend)
+
     ref_abs_sum = sum(abs.(A_global))
-    B = abs(Adist)
+    B = assert_type(abs(Adist), ST_real)
     b_sum = sum(B)
     @test b_sum ≈ ref_abs_sum atol=TOL
 
-    B2 = abs2(Adist)
+    B2 = assert_type(abs2(Adist), ST_real)
     b2_sum = sum(B2)
     @test b2_sum ≈ sum(abs2.(A_global)) atol=TOL
 
     # floor/ceil/round only for real types
     if !(T <: Complex)
-        B_floor = floor(Adist)
+        B_floor = assert_type(floor(Adist), ST)
         bf_sum = sum(B_floor)
         @test bf_sum ≈ sum(floor.(A_global.nzval)) atol=TOL
 
-        B_ceil = ceil(Adist)
+        B_ceil = assert_type(ceil(Adist), ST)
         bc_sum = sum(B_ceil)
         @test bc_sum ≈ sum(ceil.(A_global.nzval)) atol=TOL
 
-        B_round = round(Adist)
+        B_round = assert_type(round(Adist), ST)
         br_sum = sum(B_round)
         @test br_sum ≈ sum(round.(A_global.nzval)) atol=TOL
     end
 
-    B_map = map(x -> x^2 + one(T), Adist)
+    # Use pre-computed constant to avoid GPU closure issues with Type{T}
+    one_T = one(T)
+    B_map = assert_type(map(x -> x^2 + one_T, Adist), ST)
     bm_sum = sum(B_map)
-    @test bm_sum ≈ sum(x -> x^2 + one(T), A_global.nzval) atol=TOL
+    @test bm_sum ≈ sum(x -> x^2 + one_T, A_global.nzval) atol=TOL
 
 
     println(io0(), "[test] Reductions ($T, $backend_name)")
@@ -114,14 +121,14 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
 
     println(io0(), "[test] Sum with dims ($T, $backend_name)")
 
-    col_sums = sum(Adist; dims=1)
+    col_sums = assert_type(sum(Adist; dims=1), VT)
     ref_col_sums = vec(sum(A_global; dims=1))
     # Gather results via Vector() which handles CPU staging
     full_col_sums = Vector(col_sums)
     err1 = norm(full_col_sums - ref_col_sums)
     @test err1 < TOL
 
-    row_sums = sum(Adist; dims=2)
+    row_sums = assert_type(sum(Adist; dims=2), VT)
     ref_row_sums = vec(sum(A_global; dims=2))
     full_row_sums = Vector(row_sums)
     err2 = norm(full_row_sums - ref_row_sums)
@@ -134,51 +141,51 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     A_with_zeros[1, 1] = zero(T)
     ref_nnz_zeros = nnz(A_with_zeros)
     Adist_zeros = to_backend(SparseMatrixMPI{T}(A_with_zeros))
-    B = dropzeros(Adist_zeros)
+    B = assert_type(dropzeros(Adist_zeros), ST)
     b_nnz = nnz(B)
     @test b_nnz <= ref_nnz_zeros
 
 
     println(io0(), "[test] Diagonal extraction ($T, $backend_name)")
 
-    d = diag(Adist)
+    d = assert_type(diag(Adist), VT)
     ref_d = diag(A_global)
     full_d = Vector(d)
     err1 = norm(full_d - ref_d)
     @test err1 < TOL
 
-    d1 = diag(Adist, 1)
+    d1 = assert_type(diag(Adist, 1), VT)
     ref_d1 = diag(A_global, 1)
     full_d1 = Vector(d1)
     err2 = norm(full_d1 - ref_d1)
     @test err2 < TOL
 
-    dm1 = diag(Adist, -1)
+    dm1 = assert_type(diag(Adist, -1), VT)
     ref_dm1 = diag(A_global, -1)
     full_dm1 = Vector(dm1)
     err3 = norm(full_dm1 - ref_dm1)
     @test err3 < TOL
 
-    d_empty = diag(Adist, n + 5)
+    d_empty = assert_type(diag(Adist, n + 5), VT)
     @test length(d_empty) == 0
 
-    d_empty2 = diag(Adist, -(n + 5))
+    d_empty2 = assert_type(diag(Adist, -(n + 5)), VT)
     @test length(d_empty2) == 0
 
 
     println(io0(), "[test] Triangular parts ($T, $backend_name)")
 
-    U = triu(Adist)
+    U = assert_type(triu(Adist), ST)
     ref_U = triu(A_global)
     u_nnz = nnz(U)
     @test u_nnz == nnz(ref_U)
 
-    L = tril(Adist)
+    L = assert_type(tril(Adist), ST)
     ref_L = tril(A_global)
     l_nnz = nnz(L)
     @test l_nnz == nnz(ref_L)
 
-    U1 = triu(Adist, 1)
+    U1 = assert_type(triu(Adist, 1), ST)
     ref_U1 = triu(A_global, 1)
     u1_nnz = nnz(U1)
     @test u1_nnz == nnz(ref_U1)
@@ -189,16 +196,19 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     v_global = T.(collect(1.0:Float64(n)))
     v = to_backend(VectorMPI(v_global))
 
-    abs_sum = sum(abs(v))
+    # abs and abs2 return real types
+    VT_real, _, _ = TestUtils.expected_types(RT, to_backend)
+
+    abs_sum = sum(assert_type(abs(v), VT_real))
     @test abs_sum ≈ sum(abs.(v_global)) atol=TOL
 
-    abs2_sum = sum(abs2(v))
+    abs2_sum = sum(assert_type(abs2(v), VT_real))
     @test abs2_sum ≈ sum(abs2.(v_global)) atol=TOL
 
     v_mean = mean(v)
     @test v_mean ≈ sum(v_global) / n atol=TOL
 
-    v_copy = copy(v)
+    v_copy = assert_type(copy(v), VT)
     vcopy_sum = sum(v_copy)
     v_sum = sum(v)
     @test vcopy_sum ≈ v_sum atol=TOL
@@ -208,7 +218,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
 
     v_global = T.(collect(1.0:5.0))
     v_spd = to_backend(VectorMPI(v_global))
-    A_spd = spdiagm(v_spd)
+    A_spd = assert_type(spdiagm(v_spd), ST)
     ref_A = spdiagm(v_global)
     a_nnz = nnz(A_spd)
     a_sum = sum(A_spd)
@@ -221,21 +231,21 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     v2_global = T.(collect(10.0:12.0))
     v1 = to_backend(VectorMPI(v1_global))
     v2 = to_backend(VectorMPI(v2_global))
-    B_spd = spdiagm(0 => v1, 1 => v2)
+    B_spd = assert_type(spdiagm(0 => v1, 1 => v2), ST)
     ref_B = spdiagm(0 => v1_global, 1 => v2_global)
     b_nnz = nnz(B_spd)
     b_sum = sum(B_spd)
     @test b_nnz == nnz(ref_B)
     @test b_sum ≈ sum(ref_B) atol=TOL
 
-    C_spd = spdiagm(6, 6, 0 => v1)
+    C_spd = assert_type(spdiagm(6, 6, 0 => v1), ST)
     ref_C = spdiagm(6, 6, v1_global)
     c_nnz = nnz(C_spd)
     c_size = size(C_spd)
     @test c_nnz == nnz(ref_C)
     @test c_size == (6, 6)
 
-    D_spd = spdiagm(-1 => v2)
+    D_spd = assert_type(spdiagm(-1 => v2), ST)
     ref_D = spdiagm(-1 => v2_global)
     d_nnz = nnz(D_spd)
     d_sum = sum(D_spd)
@@ -250,34 +260,34 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     v = to_backend(VectorMPI(v_global))
     w = to_backend(VectorMPI(w_global))
 
-    vw_add = v .+ w
+    vw_add = assert_type(v .+ w, VT)
     vw_add_sum = sum(vw_add)
     @test vw_add_sum ≈ sum(v_global .+ w_global) atol=TOL
 
-    vw_mul = v .* w
+    vw_mul = assert_type(v .* w, VT)
     vw_mul_sum = sum(vw_mul)
     @test vw_mul_sum ≈ sum(v_global .* w_global) atol=TOL
 
-    v_scaled = v .* T(2.0)
+    v_scaled = assert_type(v .* T(2.0), VT)
     v_scaled_sum = sum(v_scaled)
     @test v_scaled_sum ≈ sum(v_global .* T(2.0)) atol=TOL
 
-    v_plus_scalar = v .+ T(100.0)
+    v_plus_scalar = assert_type(v .+ T(100.0), VT)
     v_plus_scalar_sum = sum(v_plus_scalar)
     @test v_plus_scalar_sum ≈ sum(v_global .+ T(100.0)) atol=TOL
 
     # Function broadcasting (only for real types - sin/exp may have issues with complex on GPU)
     if !(T <: Complex)
-        v_sin = sin.(v)
+        v_sin = assert_type(sin.(v), VT)
         v_sin_sum = sum(v_sin)
         @test v_sin_sum ≈ sum(sin.(v_global)) atol=TOL
 
-        v_exp = exp.(v)
+        v_exp = assert_type(exp.(v), VT)
         v_exp_sum = sum(v_exp)
         @test v_exp_sum ≈ sum(exp.(v_global)) atol=TOL
     end
 
-    compound = v .* T(2.0) .+ w .^ 2
+    compound = assert_type(v .* T(2.0) .+ w .^ 2, VT)
     compound_sum = sum(compound)
     @test compound_sum ≈ sum(v_global .* T(2.0) .+ w_global .^ 2) atol=TOL
 
@@ -298,7 +308,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
 
     if !(T <: Complex)
         v_int = to_backend(VectorMPI(T.(collect(1:10))))
-        v_sqrt = sqrt.(v_int)
+        v_sqrt = assert_type(sqrt.(v_int), VT)
         v_sqrt_sum = sum(v_sqrt)
         @test v_sqrt_sum ≈ sum(sqrt.(T.(collect(1:10)))) atol=TOL
     end
@@ -342,15 +352,15 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     w_sum_part = sum(w_part)
     @test w_sum_part ≈ sum(w_global_part) atol=TOL
 
-    vw_add_part = v_part .+ w_part
+    vw_add_part = assert_type(v_part .+ w_part, VT)
     vw_add_sum_part = sum(vw_add_part)
     @test vw_add_sum_part ≈ sum(v_global_part .+ w_global_part) atol=TOL
 
-    vw_mul_part = v_part .* w_part
+    vw_mul_part = assert_type(v_part .* w_part, VT)
     vw_mul_sum_part = sum(vw_mul_part)
     @test vw_mul_sum_part ≈ sum(v_global_part .* w_global_part) atol=TOL
 
-    compound_part = v_part .* T(2.0) .+ w_part
+    compound_part = assert_type(v_part .* T(2.0) .+ w_part, VT)
     compound_sum_part = sum(compound_part)
     @test compound_sum_part ≈ sum(v_global_part .* T(2.0) .+ w_global_part) atol=TOL
 

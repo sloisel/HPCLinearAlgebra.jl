@@ -1184,12 +1184,13 @@ function Base.getindex(A::SparseMatrixMPI{T}, ::Colon, ::Colon) where T
 end
 
 """
-    Base.getindex(A::SparseMatrixMPI{T}, ::Colon, k::Integer) where T
+    Base.getindex(A::SparseMatrixMPI{T,Ti,AV}, ::Colon, k::Integer) where {T,Ti,AV}
 
 Extract column k from a distributed sparse matrix as a VectorMPI.
 
 This is a collective operation - all ranks must call it.
 Each rank extracts its local portion of the column.
+The returned VectorMPI uses the same backend (CPU/GPU) as the input sparse matrix.
 
 # Example
 ```julia
@@ -1197,7 +1198,7 @@ A = SparseMatrixMPI{Float64}(sprand(10, 5, 0.3))
 v = A[:, 2]  # Get second column as VectorMPI
 ```
 """
-function Base.getindex(A::SparseMatrixMPI{T}, ::Colon, k::Integer) where T
+function Base.getindex(A::SparseMatrixMPI{T,Ti,AV}, ::Colon, k::Integer) where {T,Ti,AV}
     m, n = size(A)
     if k < 1 || k > n
         error("SparseMatrixMPI column index out of bounds: k=$k, ncols=$n")
@@ -1215,8 +1216,8 @@ function Base.getindex(A::SparseMatrixMPI{T}, ::Colon, k::Integer) where T
     local_col_idx = searchsortedfirst(A.col_indices, k)
     has_col = local_col_idx <= length(A.col_indices) && A.col_indices[local_col_idx] == k
 
-    # Build local portion of column
-    local_col = zeros(T, local_nrows)
+    # Build local portion of column on CPU (uses scalar indexing, then transfer to GPU if needed)
+    local_col_cpu = zeros(T, local_nrows)
 
     if has_col && local_nrows > 0
         # _get_csc(A) is CSC with shape (length(col_indices), local_nrows)
@@ -1227,12 +1228,15 @@ function Base.getindex(A::SparseMatrixMPI{T}, ::Colon, k::Integer) where T
             # Iterate over nonzeros in this row (stored as column in parent)
             for idx in parent.colptr[local_row]:(parent.colptr[local_row+1]-1)
                 if parent.rowval[idx] == local_col_idx
-                    local_col[local_row] = parent.nzval[idx]
+                    local_col_cpu[local_row] = parent.nzval[idx]
                     break
                 end
             end
         end
     end
+
+    # Convert to same backend as input sparse matrix
+    local_col = _values_to_backend(local_col_cpu, A.nzval)
 
     return VectorMPI_local(local_col)
 end

@@ -32,6 +32,7 @@ ts = @testset QuietTestSet "Matrix-Vector Multiplication" begin
 
 for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     TOL = TestUtils.tolerance(T)
+    VT, ST, MT = TestUtils.expected_types(T, to_backend)
 
     println(io0(), "[test] Matrix-vector multiplication ($T, $backend_name)")
 
@@ -47,7 +48,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     xdist = to_backend(VectorMPI(x_global))
 
     # Compute distributed product
-    ydist = Adist * xdist
+    ydist = assert_type(Adist * xdist, VT)
 
     # Reference result
     y_ref = A * x_global
@@ -103,7 +104,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     Adist = to_backend(SparseMatrixMPI{T}(A))
     xdist = to_backend(VectorMPI(x_global))
 
-    ydist = Adist * xdist
+    ydist = assert_type(Adist * xdist, VT)
     y_ref = A * x_global
 
     my_start = Adist.row_partition[rank+1]
@@ -127,7 +128,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
         xdist = to_backend(VectorMPI(x_global))
 
         # Test conj(v)
-        xconj = conj(xdist)
+        xconj = assert_type(conj(xdist), VT)
         xconj_ref = conj.(x_global)
         my_start = xdist.partition[rank+1]
         my_end = xdist.partition[rank+2] - 1
@@ -233,21 +234,21 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     my_end = udist.partition[rank+2] - 1
 
     # u + v
-    wdist = udist + vdist
+    wdist = assert_type(udist + vdist, VT)
     w_ref = u_global + v_global
     local_w = TestUtils.local_values(wdist)
     err_add = maximum(abs.(local_w .- w_ref[my_start:my_end]))
     @test err_add < TOL
 
     # u - v
-    wdist = udist - vdist
+    wdist = assert_type(udist - vdist, VT)
     w_ref = u_global - v_global
     local_w = TestUtils.local_values(wdist)
     err_sub = maximum(abs.(local_w .- w_ref[my_start:my_end]))
     @test err_sub < TOL
 
     # -v
-    wdist = -vdist
+    wdist = assert_type(-vdist, VT)
     w_ref = -v_global
     local_w = TestUtils.local_values(wdist)
     err_neg = maximum(abs.(local_w .- w_ref[my_start:my_end]))
@@ -265,20 +266,20 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     my_end = vdist.partition[rank+2] - 1
 
     # a * v
-    wdist = a * vdist
+    wdist = assert_type(a * vdist, VT)
     w_ref = a * v_global
     local_w = TestUtils.local_values(wdist)
     err_av = maximum(abs.(local_w .- w_ref[my_start:my_end]))
     @test err_av < TOL
 
     # v * a
-    wdist = vdist * a
+    wdist = assert_type(vdist * a, VT)
     local_w = TestUtils.local_values(wdist)
     err_va = maximum(abs.(local_w .- w_ref[my_start:my_end]))
     @test err_va < TOL
 
     # v / a
-    wdist = vdist / a
+    wdist = assert_type(vdist / a, VT)
     w_ref = v_global / a
     local_w = TestUtils.local_values(wdist)
     err_div = maximum(abs.(local_w .- w_ref[my_start:my_end]))

@@ -30,6 +30,7 @@ ts = @testset QuietTestSet "Addition" begin
 
 for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     TOL = TestUtils.tolerance(T)
+    VT, ST, MT = TestUtils.expected_types(T, to_backend)
 
     println(io0(), "[test] Matrix addition ($T, $backend_name)")
 
@@ -49,7 +50,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
 
     Adist = to_backend(SparseMatrixMPI{T}(A))
     Bdist = to_backend(SparseMatrixMPI{T}(B))
-    Cdist = Adist + Bdist
+    Cdist = assert_type(Adist + Bdist, ST)
     C_ref = A + B
     C_ref_dist = to_backend(SparseMatrixMPI{T}(C_ref))
 
@@ -81,7 +82,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
 
     Adist2 = to_backend(SparseMatrixMPI{T}(A2))
     Bdist2 = to_backend(SparseMatrixMPI{T}(B2))
-    Cdist2 = Adist2 - Bdist2
+    Cdist2 = assert_type(Adist2 - Bdist2, ST)
     C_ref2 = A2 - B2
     C_ref_dist2 = to_backend(SparseMatrixMPI{T}(C_ref2))
 
@@ -105,7 +106,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
 
     Adist3 = to_backend(SparseMatrixMPI{T}(A3))
     Bdist3 = to_backend(SparseMatrixMPI{T}(B3))
-    Cdist3 = Adist3 + Bdist3
+    Cdist3 = assert_type(Adist3 + Bdist3, ST)
     C_ref3 = A3 + B3
     C_ref_dist3 = to_backend(SparseMatrixMPI{T}(C_ref3))
 
@@ -118,7 +119,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     println(io0(), "[test] Cached addition path ($T, $backend_name)")
 
     # Test that repeating the same addition uses the cached plan
-    Cdist3_repeat = Adist3 + Bdist3
+    Cdist3_repeat = assert_type(Adist3 + Bdist3, ST)
     Cdist3_repeat_cpu = TestUtils.to_cpu(Cdist3_repeat)
     err3_repeat = norm(Cdist3_repeat_cpu - C_ref_dist3_cpu, Inf)
     @test err3_repeat < TOL
@@ -127,7 +128,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     println(io0(), "[test] Cached subtraction path ($T, $backend_name)")
 
     # Test that repeating the same subtraction uses the cached plan
-    Ddist = Adist3 - Bdist3
+    Ddist = assert_type(Adist3 - Bdist3, ST)
     D_ref = A3 - B3
     D_ref_dist = to_backend(SparseMatrixMPI{T}(D_ref))
     D_ref_dist_cpu = TestUtils.to_cpu(D_ref_dist)
@@ -135,7 +136,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     err_sub1 = norm(Ddist_cpu - D_ref_dist_cpu, Inf)
     @test err_sub1 < TOL
 
-    Ddist_repeat = Adist3 - Bdist3
+    Ddist_repeat = assert_type(Adist3 - Bdist3, ST)
     Ddist_repeat_cpu = TestUtils.to_cpu(Ddist_repeat)
     err_sub2 = norm(Ddist_repeat_cpu - D_ref_dist_cpu, Inf)
     @test err_sub2 < TOL

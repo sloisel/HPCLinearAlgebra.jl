@@ -18,8 +18,13 @@ const MtlVectorMPI{T} = LinearAlgebraMPI.VectorMPI{T,MtlVector{T}}
 
 Convert a CPU VectorMPI to a Metal GPU VectorMPI.
 """
-function LinearAlgebraMPI.mtl(v::LinearAlgebraMPI.VectorMPI{T}) where T
+function LinearAlgebraMPI.mtl(v::LinearAlgebraMPI.VectorMPI{T,Vector{T}}) where T
     return adapt(MtlArray, v)
+end
+
+# No-op for already-GPU vectors
+function LinearAlgebraMPI.mtl(v::LinearAlgebraMPI.VectorMPI{T,<:MtlVector}) where T
+    return v
 end
 
 """
@@ -49,7 +54,9 @@ function LinearAlgebraMPI.mtl(A::LinearAlgebraMPI.SparseMatrixMPI{T,Ti,Vector{T}
     # Convert structure arrays to GPU (used by unified SpMV kernel)
     rowptr_target = MtlVector(A.rowptr)
     colval_target = MtlVector(A.colval)
-    return LinearAlgebraMPI.SparseMatrixMPI{T,Ti,MtlVector{T}}(
+    # Use typeof() to get the concrete GPU type (e.g., MtlVector{T, PrivateStorage})
+    AV = typeof(nzval_gpu)
+    return LinearAlgebraMPI.SparseMatrixMPI{T,Ti,AV}(
         A.structural_hash,
         A.row_partition,
         A.col_partition,
@@ -64,6 +71,11 @@ function LinearAlgebraMPI.mtl(A::LinearAlgebraMPI.SparseMatrixMPI{T,Ti,Vector{T}
         rowptr_target,
         colval_target
     )
+end
+
+# No-op for already-GPU sparse matrices
+function LinearAlgebraMPI.mtl(A::LinearAlgebraMPI.SparseMatrixMPI{T,Ti,<:MtlVector}) where {T,Ti}
+    return A
 end
 
 """
@@ -101,12 +113,19 @@ Convert a CPU MatrixMPI to a Metal GPU MatrixMPI.
 """
 function LinearAlgebraMPI.mtl(A::LinearAlgebraMPI.MatrixMPI{T,Matrix{T}}) where T
     A_gpu = MtlMatrix(A.A)
-    return LinearAlgebraMPI.MatrixMPI{T,MtlMatrix{T}}(
+    # Use typeof() to get the concrete GPU type (e.g., MtlMatrix{T, PrivateStorage})
+    AM = typeof(A_gpu)
+    return LinearAlgebraMPI.MatrixMPI{T,AM}(
         A.structural_hash,
         A.row_partition,
         A.col_partition,
         A_gpu
     )
+end
+
+# No-op for already-GPU matrices
+function LinearAlgebraMPI.mtl(A::LinearAlgebraMPI.MatrixMPI{T,<:MtlMatrix}) where T
+    return A
 end
 
 """
@@ -154,39 +173,259 @@ end
 # ============================================================================
 
 """
-    _zeros_like(::Type{MtlVector{T}}, dims...) where T
+    _zeros_like(::Type{<:MtlVector{T}}, dims...) where T
 
 Create a zero MtlVector of the specified dimensions.
 Used by Base.zeros(VectorMPI{T,MtlVector{T}}, n).
+Accepts concrete types like MtlVector{T, PrivateStorage}.
 """
-LinearAlgebraMPI._zeros_like(::Type{MtlVector{T}}, dims...) where T = Metal.zeros(T, dims...)
+LinearAlgebraMPI._zeros_like(::Type{<:MtlVector{T}}, dims...) where T = Metal.zeros(T, dims...)
 
 """
-    _zeros_like(::Type{MtlMatrix{T}}, dims...) where T
+    _zeros_like(::Type{<:MtlMatrix{T}}, dims...) where T
 
 Create a zero MtlMatrix of the specified dimensions.
 Used by Base.zeros(MatrixMPI{T,MtlMatrix{T}}, m, n).
+Accepts concrete types like MtlMatrix{T, PrivateStorage}.
 """
-LinearAlgebraMPI._zeros_like(::Type{MtlMatrix{T}}, dims...) where T = Metal.zeros(T, dims...)
+LinearAlgebraMPI._zeros_like(::Type{<:MtlMatrix{T}}, dims...) where T = Metal.zeros(T, dims...)
 
 # ============================================================================
 # MatrixPlan Index Array Support
 # ============================================================================
 
 """
-    _index_array_type(::Type{MtlVector{T}}, ::Type{Ti}) where {T,Ti}
+    _index_array_type(::Type{<:MtlVector{T}}, ::Type{Ti}) where {T,Ti}
 
 Map MtlVector{T} value array type to MtlVector{Ti} index array type.
 Used by MatrixPlan to store symbolic index arrays on GPU.
+Accepts concrete types like MtlVector{T, PrivateStorage}.
 """
-LinearAlgebraMPI._index_array_type(::Type{MtlVector{T}}, ::Type{Ti}) where {T,Ti} = MtlVector{Ti}
+LinearAlgebraMPI._index_array_type(::Type{<:MtlVector{T}}, ::Type{Ti}) where {T,Ti} = MtlVector{Ti}
 
 """
-    _to_target_backend(v::Vector{Ti}, ::Type{MtlVector{T}}) where {Ti,T}
+    _to_target_backend(v::Vector{Ti}, ::Type{<:MtlVector}) where Ti
 
 Convert a CPU index vector to Metal GPU.
 Used by SparseMatrixMPI constructors to create GPU structure arrays.
+Accepts concrete types like MtlVector{T, PrivateStorage}.
 """
-LinearAlgebraMPI._to_target_backend(v::Vector{Ti}, ::Type{<:MtlVector}) where {Ti} = MtlVector(v)
+LinearAlgebraMPI._to_target_backend(v::Vector{Ti}, ::Type{<:MtlVector}) where Ti = MtlVector(v)
+
+# ============================================================================
+# GPU map_rows_gpu implementation via Metal kernels
+# ============================================================================
+
+using StaticArrays
+
+"""
+    _map_rows_gpu_kernel(f, arg1::MtlMatrix, rest::MtlMatrix...)
+
+GPU-accelerated row-wise map for Metal arrays.
+Each thread processes one row, applying `f` to the corresponding rows of all input matrices.
+Returns a Metal matrix with the same number of rows.
+"""
+function LinearAlgebraMPI._map_rows_gpu_kernel(f, arg1::MtlMatrix{T}, rest::MtlMatrix...) where T
+    n = size(arg1, 1)
+
+    # For very small problems, fall back to CPU (kernel launch overhead dominates)
+    if n < 256
+        # CPU fallback for small arrays
+        arg1_cpu = Array(arg1)
+        rest_cpu = map(Array, rest)
+        result_cpu = LinearAlgebraMPI._map_rows_cpu_kernel(f, arg1_cpu, rest_cpu...)
+        return MtlMatrix(result_cpu)
+    end
+
+    # Get output size by evaluating f on first row
+    first_rows = (SVector{size(arg1,2),T}(ntuple(j -> arg1[1,j], size(arg1,2))),)
+    for m in rest
+        first_rows = (first_rows..., SVector{size(m,2),T}(ntuple(j -> m[1,j], size(m,2))))
+    end
+    sample_out = f(first_rows...)
+
+    if sample_out isa SVector
+        out_cols = length(sample_out)
+    elseif sample_out isa SMatrix
+        out_cols = length(sample_out)  # Flatten matrix output
+    else
+        out_cols = 1  # Scalar output
+    end
+
+    # Allocate output
+    output = Metal.zeros(T, n, out_cols)
+
+    # Create kernel
+    _map_rows_kernel_dispatch(f, output, arg1, rest...)
+
+    return output
+end
+
+"""
+Dispatch to appropriate kernel based on number of arguments.
+"""
+function _map_rows_kernel_dispatch(f, output::MtlMatrix{T}, arg1::MtlMatrix{T}) where T
+    n = size(arg1, 1)
+    ncols1 = size(arg1, 2)
+    out_cols = size(output, 2)
+
+    kernel = @metal launch=false _map_rows_kernel_1arg(f, output, arg1, Val(ncols1), Val(out_cols))
+    threads = min(n, 256)
+    groups = cld(n, threads)
+    kernel(f, output, arg1, Val(ncols1), Val(out_cols); threads=threads, groups=groups)
+    Metal.synchronize()
+end
+
+function _map_rows_kernel_dispatch(f, output::MtlMatrix{T}, arg1::MtlMatrix{T}, arg2::MtlMatrix{T}) where T
+    n = size(arg1, 1)
+    ncols1 = size(arg1, 2)
+    ncols2 = size(arg2, 2)
+    out_cols = size(output, 2)
+
+    kernel = @metal launch=false _map_rows_kernel_2args(f, output, arg1, arg2, Val(ncols1), Val(ncols2), Val(out_cols))
+    threads = min(n, 256)
+    groups = cld(n, threads)
+    kernel(f, output, arg1, arg2, Val(ncols1), Val(ncols2), Val(out_cols); threads=threads, groups=groups)
+    Metal.synchronize()
+end
+
+function _map_rows_kernel_dispatch(f, output::MtlMatrix{T}, arg1::MtlMatrix{T}, arg2::MtlMatrix{T}, arg3::MtlMatrix{T}) where T
+    n = size(arg1, 1)
+    ncols1 = size(arg1, 2)
+    ncols2 = size(arg2, 2)
+    ncols3 = size(arg3, 2)
+    out_cols = size(output, 2)
+
+    kernel = @metal launch=false _map_rows_kernel_3args(f, output, arg1, arg2, arg3, Val(ncols1), Val(ncols2), Val(ncols3), Val(out_cols))
+    threads = min(n, 256)
+    groups = cld(n, threads)
+    kernel(f, output, arg1, arg2, arg3, Val(ncols1), Val(ncols2), Val(ncols3), Val(out_cols); threads=threads, groups=groups)
+    Metal.synchronize()
+end
+
+function _map_rows_kernel_dispatch(f, output::MtlMatrix{T}, arg1::MtlMatrix{T}, arg2::MtlMatrix{T}, arg3::MtlMatrix{T}, arg4::MtlMatrix{T}) where T
+    n = size(arg1, 1)
+    ncols1 = size(arg1, 2)
+    ncols2 = size(arg2, 2)
+    ncols3 = size(arg3, 2)
+    ncols4 = size(arg4, 2)
+    out_cols = size(output, 2)
+
+    kernel = @metal launch=false _map_rows_kernel_4args(f, output, arg1, arg2, arg3, arg4, Val(ncols1), Val(ncols2), Val(ncols3), Val(ncols4), Val(out_cols))
+    threads = min(n, 256)
+    groups = cld(n, threads)
+    kernel(f, output, arg1, arg2, arg3, arg4, Val(ncols1), Val(ncols2), Val(ncols3), Val(ncols4), Val(out_cols); threads=threads, groups=groups)
+    Metal.synchronize()
+end
+
+function _map_rows_kernel_dispatch(f, output::MtlMatrix{T}, arg1::MtlMatrix{T}, arg2::MtlMatrix{T}, arg3::MtlMatrix{T}, arg4::MtlMatrix{T}, arg5::MtlMatrix{T}) where T
+    n = size(arg1, 1)
+    ncols1 = size(arg1, 2)
+    ncols2 = size(arg2, 2)
+    ncols3 = size(arg3, 2)
+    ncols4 = size(arg4, 2)
+    ncols5 = size(arg5, 2)
+    out_cols = size(output, 2)
+
+    kernel = @metal launch=false _map_rows_kernel_5args(f, output, arg1, arg2, arg3, arg4, arg5, Val(ncols1), Val(ncols2), Val(ncols3), Val(ncols4), Val(ncols5), Val(out_cols))
+    threads = min(n, 256)
+    groups = cld(n, threads)
+    kernel(f, output, arg1, arg2, arg3, arg4, arg5, Val(ncols1), Val(ncols2), Val(ncols3), Val(ncols4), Val(ncols5), Val(out_cols); threads=threads, groups=groups)
+    Metal.synchronize()
+end
+
+# ============================================================================
+# Metal kernels
+# ============================================================================
+
+function _map_rows_kernel_1arg(f, output, arg1, ::Val{NC1}, ::Val{OCols}) where {NC1, OCols}
+    i = thread_position_in_grid_1d()
+    n = size(arg1, 1)
+    if i <= n
+        T = eltype(arg1)
+        row1 = SVector{NC1,T}(ntuple(j -> @inbounds(arg1[i,j]), Val(NC1)))
+        result = f(row1)
+        _write_result!(output, i, result, Val(OCols))
+    end
+    return nothing
+end
+
+function _map_rows_kernel_2args(f, output, arg1, arg2, ::Val{NC1}, ::Val{NC2}, ::Val{OCols}) where {NC1, NC2, OCols}
+    i = thread_position_in_grid_1d()
+    n = size(arg1, 1)
+    if i <= n
+        T = eltype(arg1)
+        row1 = SVector{NC1,T}(ntuple(j -> @inbounds(arg1[i,j]), Val(NC1)))
+        row2 = SVector{NC2,T}(ntuple(j -> @inbounds(arg2[i,j]), Val(NC2)))
+        result = f(row1, row2)
+        _write_result!(output, i, result, Val(OCols))
+    end
+    return nothing
+end
+
+function _map_rows_kernel_3args(f, output, arg1, arg2, arg3, ::Val{NC1}, ::Val{NC2}, ::Val{NC3}, ::Val{OCols}) where {NC1, NC2, NC3, OCols}
+    i = thread_position_in_grid_1d()
+    n = size(arg1, 1)
+    if i <= n
+        T = eltype(arg1)
+        row1 = SVector{NC1,T}(ntuple(j -> @inbounds(arg1[i,j]), Val(NC1)))
+        row2 = SVector{NC2,T}(ntuple(j -> @inbounds(arg2[i,j]), Val(NC2)))
+        row3 = SVector{NC3,T}(ntuple(j -> @inbounds(arg3[i,j]), Val(NC3)))
+        result = f(row1, row2, row3)
+        _write_result!(output, i, result, Val(OCols))
+    end
+    return nothing
+end
+
+function _map_rows_kernel_4args(f, output, arg1, arg2, arg3, arg4, ::Val{NC1}, ::Val{NC2}, ::Val{NC3}, ::Val{NC4}, ::Val{OCols}) where {NC1, NC2, NC3, NC4, OCols}
+    i = thread_position_in_grid_1d()
+    n = size(arg1, 1)
+    if i <= n
+        T = eltype(arg1)
+        row1 = SVector{NC1,T}(ntuple(j -> @inbounds(arg1[i,j]), Val(NC1)))
+        row2 = SVector{NC2,T}(ntuple(j -> @inbounds(arg2[i,j]), Val(NC2)))
+        row3 = SVector{NC3,T}(ntuple(j -> @inbounds(arg3[i,j]), Val(NC3)))
+        row4 = SVector{NC4,T}(ntuple(j -> @inbounds(arg4[i,j]), Val(NC4)))
+        result = f(row1, row2, row3, row4)
+        _write_result!(output, i, result, Val(OCols))
+    end
+    return nothing
+end
+
+function _map_rows_kernel_5args(f, output, arg1, arg2, arg3, arg4, arg5, ::Val{NC1}, ::Val{NC2}, ::Val{NC3}, ::Val{NC4}, ::Val{NC5}, ::Val{OCols}) where {NC1, NC2, NC3, NC4, NC5, OCols}
+    i = thread_position_in_grid_1d()
+    n = size(arg1, 1)
+    if i <= n
+        T = eltype(arg1)
+        row1 = SVector{NC1,T}(ntuple(j -> @inbounds(arg1[i,j]), Val(NC1)))
+        row2 = SVector{NC2,T}(ntuple(j -> @inbounds(arg2[i,j]), Val(NC2)))
+        row3 = SVector{NC3,T}(ntuple(j -> @inbounds(arg3[i,j]), Val(NC3)))
+        row4 = SVector{NC4,T}(ntuple(j -> @inbounds(arg4[i,j]), Val(NC4)))
+        row5 = SVector{NC5,T}(ntuple(j -> @inbounds(arg5[i,j]), Val(NC5)))
+        result = f(row1, row2, row3, row4, row5)
+        _write_result!(output, i, result, Val(OCols))
+    end
+    return nothing
+end
+
+# Helper to write result (scalar, SVector, or SMatrix) to output row
+@inline function _write_result!(output, i, result::Number, ::Val{1})
+    @inbounds output[i, 1] = result
+    return nothing
+end
+
+@inline function _write_result!(output, i, result::SVector{N,T}, ::Val{N}) where {N,T}
+    for j in 1:N
+        @inbounds output[i, j] = result[j]
+    end
+    return nothing
+end
+
+@inline function _write_result!(output, i, result::SMatrix{M,N,T}, ::Val{MN}) where {M,N,T,MN}
+    for j in 1:MN
+        @inbounds output[i, j] = result[j]
+    end
+    return nothing
+end
 
 end # module

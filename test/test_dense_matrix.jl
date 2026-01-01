@@ -48,6 +48,7 @@ ts = @testset QuietTestSet "Dense Matrix" begin
 
 for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     TOL = TestUtils.tolerance(T)
+    VT, ST, MT = TestUtils.expected_types(T, to_backend)
 
     println(io0(), "[test] MatrixMPI construction ($T, $backend_name)")
 
@@ -79,7 +80,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     Adist = to_backend(MatrixMPI(A))
     xdist = to_backend(VectorMPI(x_global))
 
-    ydist = Adist * xdist
+    ydist = assert_type(Adist * xdist, VT)
     y_ref = A * x_global
 
     my_start = Adist.row_partition[rank+1]
@@ -123,7 +124,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     xdist = to_backend(VectorMPI(x_global))
 
     # transpose(A) * x
-    ydist = transpose(Adist) * xdist
+    ydist = assert_type(transpose(Adist) * xdist, VT)
     y_ref = transpose(A) * x_global
 
     my_col_start = Adist.col_partition[rank+1]
@@ -147,7 +148,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
         xdist = to_backend(VectorMPI(x_global))
 
         # adjoint(A) * x
-        ydist = adjoint(Adist) * xdist
+        ydist = assert_type(adjoint(Adist) * xdist, VT)
         y_ref = adjoint(A) * x_global
 
         my_col_start = Adist.col_partition[rank+1]
@@ -210,7 +211,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     A = TestUtils.dense_matrix(T, m, n)
 
     Adist = to_backend(MatrixMPI(A))
-    At_dist = copy(transpose(Adist))
+    At_dist = assert_type(copy(transpose(Adist)), MT)
 
     At_ref = transpose(A)
     @test size(At_dist) == (n, m)
@@ -231,7 +232,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
         A = TestUtils.dense_matrix(T, m, n)
 
         Adist = to_backend(MatrixMPI(A))
-        Ah_dist = copy(adjoint(Adist))
+        Ah_dist = assert_type(copy(adjoint(Adist)), MT)
 
         Ah_ref = adjoint(A)
         @test size(Ah_dist) == (n, m)
@@ -258,14 +259,14 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     my_end = Adist.row_partition[rank+2] - 1
 
     # a * A
-    Bdist = a * Adist
+    Bdist = assert_type(a * Adist, MT)
     B_ref = a * A
     local_B = Array(Bdist.A)
     err_aA = maximum(abs.(local_B .- B_ref[my_start:my_end, :]))
     @test err_aA < TOL
 
     # A * a
-    Bdist = Adist * a
+    Bdist = assert_type(Adist * a, MT)
     local_B = Array(Bdist.A)
     err_Aa = maximum(abs.(local_B .- B_ref[my_start:my_end, :]))
     @test err_Aa < TOL
@@ -286,7 +287,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
         A = TestUtils.dense_matrix(T, m, n)
 
         Adist = to_backend(MatrixMPI(A))
-        Aconj_dist = conj(Adist)
+        Aconj_dist = assert_type(conj(Adist), MT)
 
         Aconj_ref = conj.(A)
         my_start = Adist.row_partition[rank+1]
@@ -352,7 +353,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     xdist = to_backend(VectorMPI(x_global))
 
     # A * x
-    ydist = Adist * xdist
+    ydist = assert_type(Adist * xdist, VT)
     y_ref = A * x_global
 
     my_start = Adist.row_partition[rank+1]
@@ -364,7 +365,7 @@ for (T, to_backend, backend_name) in TestUtils.ALL_CONFIGS
     @test err < TOL
 
     # transpose(A) * x (same partition since square)
-    ydist_t = transpose(Adist) * xdist
+    ydist_t = assert_type(transpose(Adist) * xdist, VT)
     y_ref_t = transpose(A) * x_global
 
     local_yt = TestUtils.local_values(ydist_t)

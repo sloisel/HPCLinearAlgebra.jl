@@ -187,7 +187,7 @@ Concatenate MatrixMPI matrices. Same interface as SparseMatrixMPI version.
 This is a distributed implementation that only gathers the rows each rank needs
 for its local output, rather than gathering all data to all ranks.
 """
-function Base.cat(As::MatrixMPI{T}...; dims) where T
+function Base.cat(As::MatrixMPI{T,AM}...; dims) where {T,AM}
     isempty(As) && error("cat requires at least one matrix")
     length(As) == 1 && return copy(As[1])
 
@@ -286,7 +286,14 @@ function Base.cat(As::MatrixMPI{T}...; dims) where T
     end
 
     # Step 4: Create MatrixMPI from local data
-    return MatrixMPI_local(local_matrix; comm=comm)
+    result = MatrixMPI_local(local_matrix; comm=comm)
+
+    # Convert to GPU if inputs were GPU
+    if AM !== Matrix{T}
+        local_matrix_gpu = copyto!(similar(As[1].A, local_nrows, total_cols), local_matrix)
+        return MatrixMPI{T,AM}(result.structural_hash, result.row_partition, result.col_partition, local_matrix_gpu)
+    end
+    return result
 end
 
 Base.hcat(As::MatrixMPI...) = cat(As...; dims=2)
@@ -303,7 +310,7 @@ Concatenate VectorMPI vectors.
 - `dims=1`: vertical concatenation (produces longer VectorMPI)
 - `dims=2`: horizontal concatenation (produces MatrixMPI with vectors as columns)
 """
-function Base.cat(vs::VectorMPI{T}...; dims) where T
+function Base.cat(vs::VectorMPI{T,AV}...; dims) where {T,AV}
     isempty(vs) && error("cat requires at least one vector")
 
     if dims isa Integer
@@ -363,7 +370,7 @@ Uses `repartition` to redistribute each input vector's elements to the ranks tha
 need them for the output. This provides plan caching and a fast path when partitions
 already align (no communication needed).
 """
-function _vcat_vectors(vs::VectorMPI{T}...) where T
+function _vcat_vectors(vs::VectorMPI{T,AV}...) where {T,AV}
     length(vs) == 1 && return copy(vs[1])
 
     comm = MPI.COMM_WORLD
@@ -382,8 +389,8 @@ function _vcat_vectors(vs::VectorMPI{T}...) where T
     my_out_end = output_partition[rank+2] - 1
     local_len = my_out_end - my_out_start + 1
 
-    # Step 3: Allocate local output vector
-    local_v = Vector{T}(undef, local_len)
+    # Step 3: Allocate local output vector (same type as input: CPU or GPU)
+    local_v = similar(vs[1].v, local_len)
 
     # Step 4: For each input vector, repartition and copy elements
     for (vec_idx, v) in enumerate(vs)
@@ -416,7 +423,7 @@ function _vcat_vectors(vs::VectorMPI{T}...) where T
     return VectorMPI_local(local_v, comm)
 end
 
-function _hcat_vectors(vs::VectorMPI{T}...) where T
+function _hcat_vectors(vs::VectorMPI{T,AV}...) where {T,AV}
     comm = MPI.COMM_WORLD
     nranks = MPI.Comm_size(comm)
 
@@ -428,9 +435,10 @@ function _hcat_vectors(vs::VectorMPI{T}...) where T
         v.partition == row_partition || error("All vectors must have same partition for hcat")
     end
 
-    # Stack local vectors as columns
+    # Stack local vectors as columns (preserves GPU type)
     local_matrix = hcat([v.v for v in vs]...)
     ncols = length(vs)
+    AM = typeof(local_matrix)
 
     # Compute col partition
     col_partition = uniform_partition(ncols, nranks)
@@ -438,7 +446,7 @@ function _hcat_vectors(vs::VectorMPI{T}...) where T
     # Compute structural hash
     structural_hash = compute_dense_structural_hash(row_partition, col_partition, size(local_matrix), comm)
 
-    return MatrixMPI{T}(structural_hash, row_partition, col_partition, local_matrix)
+    return MatrixMPI{T,AM}(structural_hash, row_partition, col_partition, local_matrix)
 end
 
 Base.hcat(vs::VectorMPI...) = cat(vs...; dims=2)

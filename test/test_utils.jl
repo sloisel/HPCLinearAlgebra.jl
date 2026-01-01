@@ -151,8 +151,66 @@ if METAL_AVAILABLE
     end
 end
 
+# ============================================================================
+# Type assertions for catching GPU/CPU type mismatches
+# ============================================================================
+
+# Detect concrete Metal storage type at module load time
+# This allows us to assert exact types, not just subtypes
+if METAL_AVAILABLE
+    # Create small test arrays to capture the concrete types
+    # MtlVector{T, S} is actually MtlArray{T, 1, S} so parameters are (T, ndims, Storage)
+    const _MTL_STORAGE = let
+        v = Metal.MtlVector{Float32}(undef, 1)
+        typeof(v).parameters[3]  # Extract storage type (e.g., Metal.PrivateStorage)
+    end
+    @info "Detected Metal storage type: $_MTL_STORAGE"
+end
+
+"""
+    assert_type(x, T)
+
+Assert that typeof(x) === T exactly and return x.
+This catches any type mismatch, including GPU/CPU mismatches.
+Throws TypeError if the check fails.
+
+Example:
+    result = assert_type(A * x, VT)  # Throws if typeof(result) !== VT
+"""
+function assert_type(x, ::Type{T}) where T
+    typeof(x) === T || throw(TypeError(:assert_type, "", T, x))
+    x
+end
+
+"""
+    expected_types(T, to_backend)
+
+Returns (VectorType, SparseType, DenseType) for type assertions in tests.
+Returns fully concrete types for exact matching.
+
+Example:
+    for (T, to_backend, backend_name) in ALL_CONFIGS
+        VT, ST, MT = expected_types(T, to_backend)
+        result = assert_type(A * x, VT)  # Assert exact type match
+    end
+"""
+function expected_types(::Type{T}, ::typeof(identity)) where T
+    (VectorMPI{T, Vector{T}},
+     SparseMatrixMPI{T, Int, Vector{T}},
+     MatrixMPI{T, Matrix{T}})
+end
+
+if METAL_AVAILABLE
+    # Return fully concrete types using the detected storage type
+    function expected_types(::Type{T}, ::typeof(LinearAlgebraMPI.mtl)) where T
+        (VectorMPI{T, Metal.MtlVector{T, _MTL_STORAGE}},
+         SparseMatrixMPI{T, Int, Metal.MtlVector{T, _MTL_STORAGE}},
+         MatrixMPI{T, Metal.MtlMatrix{T, _MTL_STORAGE}})
+    end
+end
+
 export METAL_AVAILABLE, CPU_CONFIGS, GPU_CONFIGS, ALL_CONFIGS, CPU_ONLY_CONFIGS
 export tridiagonal_matrix, dense_matrix, test_vector, test_vector_pair
-export tolerance, to_cpu, local_values
+export tolerance, to_cpu, local_values, expected_types, assert_type
 
 end # module
