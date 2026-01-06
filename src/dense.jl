@@ -1841,3 +1841,8 @@ end
 Base.broadcasted(::typeof(*), α::Number, A::MatrixMPI) = α * A
 Base.broadcasted(::typeof(*), A::MatrixMPI, α::Number) = A * α
 Base.broadcasted(::typeof(/), A::MatrixMPI, α::Number) = A / α
+
+# Handle MatrixMPI in VectorMPI broadcasts by extracting the underlying local matrix data
+# This enables broadcasting VectorMPI .* MatrixMPI on GPU without passing the wrapper
+# (wrapper contains non-bitstype fields that can't be passed to GPU kernels)
+_prepare_broadcast_arg(m::MatrixMPI, ref_partition, comm) = m.A

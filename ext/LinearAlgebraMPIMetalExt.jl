@@ -228,19 +228,12 @@ Returns a Metal matrix with the same number of rows.
 function LinearAlgebraMPI._map_rows_gpu_kernel(f, arg1::MtlMatrix{T}, rest::MtlMatrix...) where T
     n = size(arg1, 1)
 
-    # For very small problems, fall back to CPU (kernel launch overhead dominates)
-    if n < 256
-        # CPU fallback for small arrays
-        arg1_cpu = Array(arg1)
-        rest_cpu = map(Array, rest)
-        result_cpu = LinearAlgebraMPI._map_rows_cpu_kernel(f, arg1_cpu, rest_cpu...)
-        return MtlMatrix(result_cpu)
-    end
-
-    # Get output size by evaluating f on first row
-    first_rows = (SVector{size(arg1,2),T}(ntuple(j -> arg1[1,j], size(arg1,2))),)
+    # Get output size by evaluating f on first row (copy to CPU to avoid scalar indexing)
+    arg1_row1 = Array(view(arg1, 1:1, :))[1, :]
+    first_rows = (SVector{size(arg1,2),T}(arg1_row1...),)
     for m in rest
-        first_rows = (first_rows..., SVector{size(m,2),T}(ntuple(j -> m[1,j], size(m,2))))
+        m_row1 = Array(view(m, 1:1, :))[1, :]
+        first_rows = (first_rows..., SVector{size(m,2),T}(m_row1...))
     end
     sample_out = f(first_rows...)
 
