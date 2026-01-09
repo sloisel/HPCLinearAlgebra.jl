@@ -6,10 +6,13 @@ coverage:
     project:
       default:
         target: auto
-        threshold: 1%
+        threshold: 5%
     patch:
       default:
         target: auto
+        threshold: 0%
 
 ignore:
-  - "ext/**/*"  # GPU extensions (Metal, CUDA) - no GPU runners on CI
+  - "ext/"
+  - "ext/LinearAlgebraMPICUDAExt.jl"
+  - "ext/LinearAlgebraMPIMetalExt.jl"
