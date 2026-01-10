@@ -145,18 +145,8 @@ function Base.cat(As::HPCSparseMatrix{T,Ti,Bk}...; dims) where {T,Ti,Bk<:HPCBack
 
     result = HPCSparseMatrix_local(transpose(AT_local), backend)
 
-    # Convert to GPU if inputs were GPU (GPU→CPU for MPI, then CPU→GPU for result)
-    device = backend.device
-    if !(device isa DeviceCPU)
-        nzval_target = copyto!(similar(As[1].nzval, length(result.nzval)), result.nzval)
-        rowptr_target = _to_target_device(result.rowptr, device)
-        colval_target = _to_target_device(result.colval, device)
-        return HPCSparseMatrix{T,Ti,Bk}(
-            result.structural_hash, result.row_partition, result.col_partition, result.col_indices,
-            result.rowptr, result.colval, nzval_target, result.nrows_local, result.ncols_compressed,
-            nothing, result.cached_symmetric, rowptr_target, colval_target, backend)
-    end
-    return result
+    # Convert to target backend (no-op for CPU, copies for GPU)
+    return to_backend(result, backend)
 end
 
 # ============================================================================
@@ -292,12 +282,8 @@ function Base.cat(As::HPCMatrix{T,B}...; dims) where {T, B<:HPCBackend}
     # Step 4: Create HPCMatrix from local data
     result = HPCMatrix_local(local_matrix, backend)
 
-    # Convert to GPU if inputs were GPU (check if backend device is not CPU)
-    if !(backend.device isa DeviceCPU)
-        local_matrix_gpu = copyto!(similar(As[1].A, local_nrows, total_cols), local_matrix)
-        return HPCMatrix{T,B}(result.structural_hash, result.row_partition, result.col_partition, local_matrix_gpu, backend)
-    end
-    return result
+    # Convert to target backend (no-op for CPU, copies for GPU)
+    return to_backend(result, backend)
 end
 
 Base.hcat(As::HPCMatrix...) = cat(As...; dims=2)
@@ -483,7 +469,6 @@ function blockdiag(As::HPCSparseMatrix{T,Ti,Bk}...) where {T,Ti,Bk<:HPCBackend}
 
     backend = As[1].backend
     comm = backend.comm
-    device = backend.device
     rank = comm_rank(comm)
     nranks = comm_size(comm)
 
@@ -555,15 +540,6 @@ function blockdiag(As::HPCSparseMatrix{T,Ti,Bk}...) where {T,Ti,Bk<:HPCBackend}
 
     result = HPCSparseMatrix_local(transpose(AT_local), backend)
 
-    # Convert to GPU if inputs were GPU (GPU→CPU for MPI, then CPU→GPU for result)
-    if !(device isa DeviceCPU)
-        nzval_target = copyto!(similar(As[1].nzval, length(result.nzval)), result.nzval)
-        rowptr_target = _to_target_device(result.rowptr, device)
-        colval_target = _to_target_device(result.colval, device)
-        return HPCSparseMatrix{T,Ti,Bk}(
-            result.structural_hash, result.row_partition, result.col_partition, result.col_indices,
-            result.rowptr, result.colval, nzval_target, result.nrows_local, result.ncols_compressed,
-            nothing, result.cached_symmetric, rowptr_target, colval_target, backend)
-    end
-    return result
+    # Convert to target backend (no-op for CPU, copies for GPU)
+    return to_backend(result, backend)
 end

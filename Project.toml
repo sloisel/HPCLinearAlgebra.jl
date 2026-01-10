@@ -1,7 +1,7 @@
 authors = ["S. Loisel"]
 name = "HPCLinearAlgebra"
 uuid = "537374f1-5608-4525-82fb-641dce542540"
-version = "0.1.9"
+version = "0.1.0"
 
 [compat]
 Adapt = "4"

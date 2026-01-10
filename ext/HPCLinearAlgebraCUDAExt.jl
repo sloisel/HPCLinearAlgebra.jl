@@ -667,19 +667,13 @@ function _create_cudss_factorization(A::HPCLinearAlgebra.HPCSparseMatrix{T,Ti,B}
     rhs = rhs_ref[]
     _cudss_matrix_set_distribution_row1d(rhs, Int64(first_row), Int64(last_row))
 
-    comm_barrier(comm)
-
     # Run analysis phase
     # Note: Analysis caching is disabled in MGMN mode because cudssDataGet for
     # PERM_REORDER_ROW/COL returns INVALID_VALUE. Each factorization does full analysis.
     _cudss_execute(handle, CUDSS_PHASE_ANALYSIS, config, data, matrix, solution, rhs)
-    CUDA.synchronize()
-    comm_barrier(comm)
 
     # Run numeric factorization
     _cudss_execute(handle, CUDSS_PHASE_FACTORIZATION, config, data, matrix, solution, rhs)
-    CUDA.synchronize()
-    comm_barrier(comm)
 
     # Create factorization object
     F = CuDSSFactorizationMPI{T,B}(
@@ -710,10 +704,8 @@ function HPCLinearAlgebra.solve(F::CuDSSFactorizationMPI{T,B}, b::HPCLinearAlgeb
     # Copy b directly to RHS buffer (GPU to GPU)
     copyto!(F.b_gpu, b.v)
 
-    # Execute solve phase only
+    # Execute solve phase only (collective operation)
     _cudss_execute(F.handle, CUDSS_PHASE_SOLVE, F.config, F.data, F.matrix, F.solution, F.rhs)
-    CUDA.synchronize()
-    comm_barrier(comm)
 
     # Return GPU vector (copy from internal buffer) with backend
     return HPCLinearAlgebra.HPCVector{T,B}(b.structural_hash, b.partition, copy(F.x_gpu), F.backend)
@@ -736,10 +728,6 @@ Only destroys: data (L/U factors), matrix wrappers.
 Does NOT destroy: handle, config (global, cached per-process).
 """
 function HPCLinearAlgebra.finalize!(F::CuDSSFactorizationMPI)
-    comm = F.backend.comm
-    CUDA.synchronize()
-    comm_barrier(comm)
-
     # Destroy data object (holds L/U factors - collective operation in MGMN mode)
     if F.data != C_NULL
         _cudss_data_destroy(F.handle, F.data)
@@ -759,9 +747,6 @@ function HPCLinearAlgebra.finalize!(F::CuDSSFactorizationMPI)
         _cudss_matrix_destroy(F.rhs)
         F.rhs = C_NULL
     end
-
-    CUDA.synchronize()
-    comm_barrier(comm)
 
     return nothing
 end
@@ -798,18 +783,11 @@ function _refactorize_and_solve!(F::CuDSSFactorizationMPI{T,B},
     # Copy RHS to buffer
     copyto!(F.b_gpu, b.v)
 
-    CUDA.synchronize()
-    comm_barrier(comm)
-
     # Refactorize (skip analysis - the symbolic factorization is already done)
     _cudss_execute(F.handle, CUDSS_PHASE_FACTORIZATION, F.config, F.data, F.matrix, F.solution, F.rhs)
-    CUDA.synchronize()
-    comm_barrier(comm)
 
     # Solve
     _cudss_execute(F.handle, CUDSS_PHASE_SOLVE, F.config, F.data, F.matrix, F.solution, F.rhs)
-    CUDA.synchronize()
-    comm_barrier(comm)
 
     # Return GPU vector (copy from internal buffer) with backend
     return HPCLinearAlgebra.HPCVector{T, B}(b.structural_hash, b.partition, copy(F.x_gpu), b.backend)
@@ -839,12 +817,9 @@ function Base.:\(A::HPCLinearAlgebra.HPCSparseMatrix{T,Ti,B},
         F = _create_cudss_factorization(A, false)
         _cudss_backslash_cache[cache_key] = F
 
-        # Solve
-        comm = A.backend.comm
+        # Solve (collective operation)
         copyto!(F.b_gpu, b.v)
         _cudss_execute(F.handle, CUDSS_PHASE_SOLVE, F.config, F.data, F.matrix, F.solution, F.rhs)
-        CUDA.synchronize()
-        comm_barrier(comm)
 
         return HPCLinearAlgebra.HPCVector{T, B}(b.structural_hash, b.partition, copy(F.x_gpu), b.backend)
     end
@@ -870,12 +845,9 @@ function Base.:\(A::Symmetric{T,<:HPCLinearAlgebra.HPCSparseMatrix{T,Ti,B}},
         F = _create_cudss_factorization(A_inner, true)
         _cudss_backslash_cache[cache_key] = F
 
-        # Solve
-        comm = A_inner.backend.comm
+        # Solve (collective operation)
         copyto!(F.b_gpu, b.v)
         _cudss_execute(F.handle, CUDSS_PHASE_SOLVE, F.config, F.data, F.matrix, F.solution, F.rhs)
-        CUDA.synchronize()
-        comm_barrier(comm)
 
         return HPCLinearAlgebra.HPCVector{T, B}(b.structural_hash, b.partition, copy(F.x_gpu), b.backend)
     end
@@ -928,7 +900,6 @@ function _cuda_map_rows_kernel_dispatch(f, output::CuMatrix{T}, arg1::CuMatrix{T
     threads = min(n, config.threads)
     blocks = cld(n, threads)
     kernel(f, output, arg1, Val(ncols1), Val(out_cols); threads=threads, blocks=blocks)
-    CUDA.synchronize()
 end
 
 function _cuda_map_rows_kernel_dispatch(f, output::CuMatrix{T}, arg1::CuMatrix{T}, arg2::CuMatrix{T}) where T
@@ -942,7 +913,6 @@ function _cuda_map_rows_kernel_dispatch(f, output::CuMatrix{T}, arg1::CuMatrix{T
     threads = min(n, config.threads)
     blocks = cld(n, threads)
     kernel(f, output, arg1, arg2, Val(ncols1), Val(ncols2), Val(out_cols); threads=threads, blocks=blocks)
-    CUDA.synchronize()
 end
 
 # CUDA kernels

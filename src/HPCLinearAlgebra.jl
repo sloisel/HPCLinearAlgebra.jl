@@ -170,6 +170,7 @@ const _identity_addition_plan_cache = Dict{Tuple{Blake3Hash,DataType,DataType},A
 # Forward declarations - implementations are after include("backends.jl")
 function _convert_array end
 function to_backend end
+function _array_to_device end  # GPU extensions provide CPU→GPU conversion
 
 """
     clear_plan_cache!()

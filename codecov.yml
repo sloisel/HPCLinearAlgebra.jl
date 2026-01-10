@@ -14,5 +14,5 @@ coverage:
 
 ignore:
   - "ext/"
-  - "ext/LinearAlgebraMPICUDAExt.jl"
-  - "ext/LinearAlgebraMPIMetalExt.jl"
+  - "ext/HPCLinearAlgebraCUDAExt.jl"
+  - "ext/HPCLinearAlgebraMetalExt.jl"

@@ -587,28 +587,11 @@ _get_mpi_comm(c::CommMPI) = c.comm
 _get_mpi_comm(::CommSerial) = error("Gatherv/Scatterv not supported for CommSerial in MUMPS solve")
 
 # Helper to copy values into a HPCVector (handles GPU arrays)
+# Unified: _convert_array handles CPU→GPU conversion, copyto! handles the copy
 function _copy_to_vector!(x::HPCVector{T,B}, values::Vector) where {T,B}
-    if x.backend.device isa DeviceCPU
-        x.v .= values
-    else
-        # GPU array - need to copy through appropriate method
-        copyto!(x.v, _convert_to_device_array(values, x.backend.device))
-    end
+    copyto!(x.v, _convert_array(values, x.backend.device))
     return x
 end
-
-# Convert a CPU vector to a target device
-function _convert_to_device_array(v::Vector{T}, device::AbstractDevice) where T
-    if device isa DeviceCPU
-        return v
-    else
-        # For GPU devices, use extension-defined function
-        return _array_to_device(v, device)
-    end
-end
-
-# Fallback for CPU device
-_array_to_device(v::Vector{T}, ::DeviceCPU) where T = v
 
 """
     Base.:\\(F::MUMPSFactorization, b::HPCVector)

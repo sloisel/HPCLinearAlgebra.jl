@@ -618,16 +618,8 @@ function LinearAlgebra.mul!(y::HPCVector{T,B}, A::HPCMatrix{T,B}, x::HPCVector{T
     plan = get_dense_vector_plan(A, x)
     execute_plan!(plan, x)
 
-    # Check if CPU or GPU based on device type
-    if A.backend.device isa DeviceCPU
-        # CPU path
-        y_local_cpu = Vector{T}(undef, length(y.v))
-        LinearAlgebra.mul!(y_local_cpu, A.A, plan.gathered_cpu)
-        copyto!(y.v, y_local_cpu)
-    else
-        # GPU path
-        LinearAlgebra.mul!(y.v, A.A, plan.gathered)
-    end
+    # Unified CPU/GPU path: plan.gathered has correct type after execute_plan!
+    LinearAlgebra.mul!(y.v, A.A, plan.gathered)
     return y
 end
 
@@ -653,16 +645,9 @@ function Base.:*(A::HPCMatrix{T,B}, x::HPCVector{T,B}) where {T,B<:HPCBackend}
     # Execute the plan to gather vector elements
     execute_plan!(plan, x)
 
-    # Check if CPU or GPU based on device type
-    if A.backend.device isa DeviceCPU
-        # CPU path
-        y_v = Vector{T}(undef, local_rows)
-        LinearAlgebra.mul!(y_v, A.A, plan.gathered_cpu)
-    else
-        # GPU path
-        y_v = similar(A.A, local_rows)
-        LinearAlgebra.mul!(y_v, A.A, plan.gathered)
-    end
+    # Unified CPU/GPU path: similar() preserves array type, plan.gathered has correct type
+    y_v = similar(A.A, local_rows)
+    LinearAlgebra.mul!(y_v, A.A, plan.gathered)
 
     return HPCVector{T,B}(
         plan.result_partition_hash,
@@ -936,13 +921,9 @@ function execute_plan!(plan::DenseTransposePlan{T}, A::HPCMatrix{T,B}) where {T,
             plan.row_partition, plan.col_partition, size(result_AT), comm)
     end
 
-    # Convert result to match input array type (CPU or GPU)
-    if !(A.backend.device isa DeviceCPU)
-        # Input was GPU - convert result back to GPU
-        result_AT_gpu = copyto!(similar(A.A, size(result_AT)), result_AT)
-        return HPCMatrix{T,B}(plan.structural_hash, plan.row_partition, plan.col_partition, result_AT_gpu, A.backend)
-    end
-    return HPCMatrix{T,B}(plan.structural_hash, plan.row_partition, plan.col_partition, result_AT, A.backend)
+    # Unified CPU/GPU path: _convert_array is no-op for CPU, copies for GPU
+    result_A = _convert_array(result_AT, A.backend.device)
+    return HPCMatrix{T,B}(plan.structural_hash, plan.row_partition, plan.col_partition, result_A, A.backend)
 end
 
 """
@@ -1249,19 +1230,14 @@ function Base.:*(At::Transpose{T,HPCMatrix{T,B}}, x::HPCVector{T,B}) where {T,B<
     my_row_start = A.row_partition[rank+1]
     my_row_end = A.row_partition[rank+2] - 1
 
-    if A.backend.device isa DeviceCPU
-        # CPU path
-        local_gathered = @view plan.gathered_cpu[my_row_start:my_row_end]
-        partial_result = transpose(A.A) * local_gathered
-    else
-        # GPU path - use GPU gathered directly
-        local_gathered = @view plan.gathered[my_row_start:my_row_end]
-        # For Metal, views may not work directly - copy to contiguous array
-        local_gathered_gpu = similar(A.A, length(local_gathered))
-        copyto!(local_gathered_gpu, Array(local_gathered))
-        partial_result_gpu = transpose(A.A) * local_gathered_gpu
-        partial_result = Array(partial_result_gpu)  # Need CPU for Allreduce
-    end
+    # Unified CPU/GPU path:
+    # 1. Get slice and copy to contiguous array (fixes GPU view issues)
+    # 2. Compute on backend
+    # 3. Ensure CPU for Allreduce (no-op for CPU, copy for GPU)
+    local_gathered_slice = plan.gathered[my_row_start:my_row_end]
+    local_gathered_contiguous = copy(local_gathered_slice)
+    partial_result_backend = transpose(A.A) * local_gathered_contiguous
+    partial_result = _ensure_cpu(partial_result_backend)
 
     # Allreduce to sum contributions from all ranks
     full_result = comm_allreduce(comm, partial_result, +)
@@ -1271,8 +1247,8 @@ function Base.:*(At::Transpose{T,HPCMatrix{T,B}}, x::HPCVector{T,B}) where {T,B<
     my_col_end = A.col_partition[rank+2] - 1
     local_result_cpu = full_result[my_col_start:my_col_end]
 
-    # Copy to GPU if needed
-    local_result = (A.backend.device isa DeviceCPU) ? local_result_cpu : copyto!(similar(x.v, length(local_result_cpu)), local_result_cpu)
+    # Unified: _convert_array is no-op for CPU, copies for GPU
+    local_result = _convert_array(local_result_cpu, A.backend.device)
 
     # Create result vector (partition is immutable, no need to copy)
     y = HPCVector{T,B}(
@@ -1325,11 +1301,8 @@ function Base.:*(At::TransposedHPCMatrix{T,B}, Bmat::HPCMatrix{T,B}) where {T,B}
     result_partition = columns[1].partition
     local_m = result_partition[rank+2] - result_partition[rank+1]
 
-    # Build local matrix from column results (columns[k].v may be GPU array)
-    local_result = Matrix{T}(undef, local_m, n)
-    for k in 1:n
-        local_result[:, k] = Array(columns[k].v)  # Ensure CPU for HPCMatrix_local
-    end
+    # Build local matrix from column results (preserves GPU array type)
+    local_result = reduce(hcat, [columns[k].v for k in 1:n])
 
     return HPCMatrix_local(local_result, A.backend)
 end
@@ -1530,9 +1503,9 @@ function Base.mapslices(f, A::HPCMatrix{T,B}; dims) where {T,B}
         results = Vector{Any}(undef, n)
         for j in 1:n
             # Gather full column j from all ranks
-            # Convert to CPU for MPI communication (no-op for CPU arrays)
+            # Unified: _ensure_cpu is no-op for CPU, Array() for GPU
             local_col = A.A[:, j]
-            local_col_cpu = local_col isa Vector ? local_col : Vector(local_col)
+            local_col_cpu = _ensure_cpu(local_col)
             counts = Int32[A.row_partition[r+1] - A.row_partition[r] for r in 1:nranks]
             full_col = Vector{T}(undef, m_global)
             comm_allgatherv!(comm, local_col_cpu, MPI.VBuffer(full_col, counts))
