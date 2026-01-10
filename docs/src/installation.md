@@ -31,24 +31,25 @@ julia --project -e 'using Pkg; Pkg.instantiate()'
 
 ## Verification
 
-Test your installation with MPI:
+Test your installation:
 
 ```bash
 cd HPCLinearAlgebra.jl
-mpiexec -n 2 julia --project test/runtests.jl
+julia --project -e 'using Pkg; Pkg.test()'
 ```
+
+The test harness automatically spawns MPI processes for each test file.
 
 ## Initialization Pattern
 
 !!! tip "Initialization Pattern"
-    Initialize MPI first, then load the package:
+    Initialize MPI before using HPCLinearAlgebra:
 
 ```julia
-# CORRECT
 using MPI
-using HPCLinearAlgebra
 MPI.Init()
-# Now you can use the package
+using HPCLinearAlgebra
+# Now you can use the package with BACKEND_CPU_MPI
 ```
 
 ## Running MPI Programs
@@ -57,13 +58,16 @@ Create a script file (e.g., `my_program.jl`):
 
 ```julia
 using MPI
-using HPCLinearAlgebra
 MPI.Init()
+using HPCLinearAlgebra
 using SparseArrays
 
+# Use the default MPI backend
+backend = BACKEND_CPU_MPI
+
 # Create distributed matrix
-A = HPCSparseMatrix{Float64}(sprandn(100, 100, 0.1) + 10I)
-b = HPCVector(randn(100))
+A = HPCSparseMatrix(sprandn(100, 100, 0.1) + 10I, backend)
+b = HPCVector(randn(100), backend)
 
 # Solve
 x = A \ b

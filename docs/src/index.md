@@ -28,19 +28,22 @@ HPCLinearAlgebra.jl provides distributed matrix and vector types for parallel co
 
 ```julia
 using MPI
-using HPCLinearAlgebra
 MPI.Init()
+using HPCLinearAlgebra
 using SparseArrays
 
+# Use the default MPI backend
+backend = BACKEND_CPU_MPI
+
 # Create distributed sparse matrix
-A = HPCSparseMatrix{Float64}(sprandn(100, 100, 0.1) + 10I)
-b = HPCVector(randn(100))
+A = HPCSparseMatrix(sprandn(100, 100, 0.1) + 10I, backend)
+b = HPCVector(randn(100), backend)
 
 # Solve linear system
 x = A \ b
 
 # Row-wise operations
-norms = map_rows(row -> norm(row), HPCMatrix(randn(50, 10)))
+norms = map_rows(row -> norm(row), HPCMatrix(randn(50, 10), backend))
 
 println(io0(), "Solution computed!")
 ```
@@ -66,9 +69,9 @@ Depth = 2
 
 ## Requirements
 
-- Julia 1.10 or later (LTS version)
+- Julia 1.11 or later
 - MPI installation (OpenMPI, MPICH, or Intel MPI)
-- MUMPS for sparse direct solves
+- MUMPS for sparse direct solves (bundled via MUMPS.jl)
 
 ## License
 

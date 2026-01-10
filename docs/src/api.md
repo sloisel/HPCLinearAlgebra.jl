@@ -76,25 +76,42 @@ clear_mumps_analysis_cache!
 io0
 ```
 
+## Backend Types
+
+```@docs
+HPCBackend
+DeviceCPU
+DeviceMetal
+DeviceCUDA
+CommSerial
+CommMPI
+SolverMUMPS
+BACKEND_CPU_MPI
+BACKEND_CPU_SERIAL
+backend_metal_mpi
+backend_cuda_mpi
+to_backend
+```
+
 ## Type Mappings
 
-### Native to MPI Conversions
+### Native to Distributed Conversions
 
-| Native Type | MPI Type | Description |
-|-------------|----------|-------------|
-| `Vector{T}` | `HPCVector{T,AV}` | Distributed vector |
-| `Matrix{T}` | `HPCMatrix{T,AM}` | Distributed dense matrix |
-| `SparseMatrixCSC{T,Ti}` | `HPCSparseMatrix{T,Ti,AV}` | Distributed sparse matrix |
+| Native Type | Distributed Type | Description |
+|-------------|------------------|-------------|
+| `Vector{T}` | `HPCVector{T,B}` | Distributed vector |
+| `Matrix{T}` | `HPCMatrix{T,B}` | Distributed dense matrix |
+| `SparseMatrixCSC{T,Ti}` | `HPCSparseMatrix{T,Ti,B}` | Distributed sparse matrix |
 
-The `AV` and `AM` type parameters specify the underlying storage (`Vector{T}`/`Matrix{T}` for CPU, `MtlVector{T}`/`MtlMatrix{T}` for Metal GPU).
+The `B<:HPCBackend` type parameter specifies the backend configuration (device, communication, solver). Use pre-constructed backends like `BACKEND_CPU_MPI` or factory functions like `backend_cuda_mpi(comm)`.
 
-### MPI to Native Conversions
+### Distributed to Native Conversions
 
-| MPI Type | Native Type | Function |
-|----------|-------------|----------|
-| `HPCVector{T,AV}` | `Vector{T}` | `Vector(v)` |
-| `HPCMatrix{T,AM}` | `Matrix{T}` | `Matrix(A)` |
-| `HPCSparseMatrix{T,Ti,AV}` | `SparseMatrixCSC{T,Ti}` | `SparseMatrixCSC(A)` |
+| Distributed Type | Native Type | Function |
+|------------------|-------------|----------|
+| `HPCVector{T,B}` | `Vector{T}` | `Vector(v)` |
+| `HPCMatrix{T,B}` | `Matrix{T}` | `Matrix(A)` |
+| `HPCSparseMatrix{T,Ti,B}` | `SparseMatrixCSC{T,Ti}` | `SparseMatrixCSC(A)` |
 
 ## Supported Operations
 

@@ -728,7 +728,7 @@ end
 Gather a distributed HPCVector to a full Vector on all ranks.
 Requires MPI communication (Allgatherv).
 """
-function Base.Vector(v::HPCVector{T}) where T
+function Base.Vector(v::HPCVector{T,B}) where {T, B<:HPCBackend}
     comm = v.backend.comm
     nranks = comm_size(comm)
 
@@ -751,7 +751,7 @@ end
 Gather a distributed HPCMatrix to a full Matrix on all ranks.
 Requires MPI communication (Allgatherv).
 """
-function Base.Matrix(A::HPCMatrix{T}) where T
+function Base.Matrix(A::HPCMatrix{T,B}) where {T, B<:HPCBackend}
     comm = A.backend.comm
     nranks = comm_size(comm)
 
@@ -796,7 +796,7 @@ end
 Gather a distributed HPCSparseMatrix to a full SparseMatrixCSC on all ranks.
 Requires MPI communication (Allgatherv).
 """
-function SparseArrays.SparseMatrixCSC(A::HPCSparseMatrix{T}) where T
+function SparseArrays.SparseMatrixCSC(A::HPCSparseMatrix{T,Ti,B}) where {T, Ti, B<:HPCBackend}
     comm = A.backend.comm
     rank = comm_rank(comm)
     nranks = comm_size(comm)

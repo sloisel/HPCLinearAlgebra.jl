@@ -8,15 +8,29 @@ HPCLinearAlgebra provides three distributed types:
 
 | Type | Description | Storage |
 |------|-------------|---------|
-| `HPCVector{T,AV}` | Distributed vector | Row-partitioned |
-| `HPCMatrix{T,AM}` | Distributed dense matrix | Row-partitioned |
-| `HPCSparseMatrix{T,Ti,AV}` | Distributed sparse matrix | Row-partitioned CSR |
+| `HPCVector{T,B}` | Distributed vector | Row-partitioned |
+| `HPCMatrix{T,B}` | Distributed dense matrix | Row-partitioned |
+| `HPCSparseMatrix{T,Ti,B}` | Distributed sparse matrix | Row-partitioned CSR |
 
 The type parameters are:
 - `T`: Element type (`Float64`, `Float32`, `ComplexF64`, etc.)
-- `AV<:AbstractVector{T}`: Underlying storage for vectors and sparse matrix values (`Vector{T}` for CPU, `MtlVector{T}` for Metal, `CuVector{T}` for CUDA)
-- `AM<:AbstractMatrix{T}`: Underlying storage for dense matrices (`Matrix{T}` for CPU, `MtlMatrix{T}` for Metal, `CuMatrix{T}` for CUDA)
+- `B<:HPCBackend`: Backend configuration (device, communication, solver)
 - `Ti`: Index type for sparse matrices (typically `Int`)
+
+### Backends
+
+The `HPCBackend{Device, Comm, Solver}` type encapsulates three concerns:
+- **Device**: Where data lives (`DeviceCPU`, `DeviceMetal`, `DeviceCUDA`)
+- **Comm**: How ranks communicate (`CommSerial`, `CommMPI`)
+- **Solver**: Sparse direct solver (`SolverMUMPS`, cuDSS variants)
+
+Pre-constructed backends for common use cases:
+- `BACKEND_CPU_SERIAL`: CPU with no MPI (single-process)
+- `BACKEND_CPU_MPI`: CPU with MPI communication (most common)
+
+GPU backends are created via factory functions after loading the GPU package:
+- `backend_metal_mpi(comm)`: Metal GPU with MPI
+- `backend_cuda_mpi(comm)`: CUDA GPU with MPI
 
 All types are row-partitioned across MPI ranks, meaning each rank owns a contiguous range of rows.
 
@@ -32,14 +46,17 @@ In Julia, `SparseMatrixCSR{T,Ti}` is a type alias for `Transpose{T, SparseMatrix
 
 ```julia
 using MPI
+MPI.Init()
 using HPCLinearAlgebra
 using SparseArrays
-MPI.Init()
+
+# Use the default MPI backend
+backend = BACKEND_CPU_MPI
 
 # Create from native types (data is distributed automatically)
-v = HPCVector(randn(100))
-A = HPCMatrix(randn(50, 30))
-S = HPCSparseMatrix{Float64}(sprandn(100, 100, 0.1))
+v = HPCVector(randn(100), backend)
+A = HPCMatrix(randn(50, 30), backend)
+S = HPCSparseMatrix(sprandn(100, 100, 0.1), backend)
 ```
 
 ### Local Constructors
@@ -58,6 +75,7 @@ S_local = HPCSparseMatrix_local(my_local_sparse)
 For large matrices, avoid replicating data across all ranks by only populating each rank's local portion:
 
 ```julia
+backend = BACKEND_CPU_MPI
 comm = MPI.COMM_WORLD
 rank = MPI.Comm_rank(comm)
 nranks = MPI.Comm_size(comm)
@@ -86,7 +104,7 @@ end
 A = sparse(I, J, V, m, n)
 
 # The constructor extracts only local rows - other rows are ignored
-Adist = HPCSparseMatrix{Float64}(A)
+Adist = HPCSparseMatrix(A, backend)
 ```
 
 ## Basic Operations
@@ -94,10 +112,11 @@ Adist = HPCSparseMatrix{Float64}(A)
 ### Vector Operations
 
 ```julia
-v = HPCVector(randn(100))
-w = HPCVector(randn(100))
+backend = BACKEND_CPU_MPI
+v = HPCVector(randn(100), backend)
+w = HPCVector(randn(100), backend)
 
-# Arithmetic
+# Arithmetic (backend is inferred from operands)
 u = v + w
 u = v - w
 u = 2.0 * v
@@ -112,8 +131,9 @@ c = conj(v)
 ### Matrix-Vector Products
 
 ```julia
-A = HPCMatrix(randn(50, 100))
-v = HPCVector(randn(100))
+backend = BACKEND_CPU_MPI
+A = HPCMatrix(randn(50, 100), backend)
+v = HPCVector(randn(100), backend)
 
 # Matrix-vector multiply
 y = A * v
@@ -124,14 +144,15 @@ y = A * v
 ```julia
 using SparseArrays
 
-A = HPCSparseMatrix{Float64}(sprandn(100, 100, 0.1))
-v = HPCVector(randn(100))
+backend = BACKEND_CPU_MPI
+A = HPCSparseMatrix(sprandn(100, 100, 0.1), backend)
+v = HPCVector(randn(100), backend)
 
 # Matrix-vector multiply
 y = A * v
 
 # Matrix-matrix multiply
-B = HPCSparseMatrix{Float64}(sprandn(100, 100, 0.1))
+B = HPCSparseMatrix(sprandn(100, 100, 0.1), backend)
 C = A * B
 ```
 
@@ -140,11 +161,16 @@ C = A * B
 ### Direct Solve with Backslash
 
 ```julia
+using MPI
+MPI.Init()
+using HPCLinearAlgebra
 using SparseArrays
 
+backend = BACKEND_CPU_MPI
+
 # Create a well-conditioned sparse matrix
-A = HPCSparseMatrix{Float64}(sprandn(100, 100, 0.1) + 10I)
-b = HPCVector(randn(100))
+A = HPCSparseMatrix(sprandn(100, 100, 0.1) + 10I, backend)
+b = HPCVector(randn(100), backend)
 
 # Solve A * x = b
 x = A \ b
@@ -157,12 +183,14 @@ For symmetric matrices, wrap with `Symmetric` to use faster LDLT factorization:
 ```julia
 using LinearAlgebra
 
-# Create symmetric positive definite matrix
-A_base = HPCSparseMatrix{Float64}(sprandn(100, 100, 0.1))
-A_spd = A_base + HPCSparseMatrix(transpose(A_base)) + 
-        HPCSparseMatrix{Float64}(sparse(10.0I, 100, 100))
+backend = BACKEND_CPU_MPI
 
-b = HPCVector(randn(100))
+# Create symmetric positive definite matrix
+A_base = HPCSparseMatrix(sprandn(100, 100, 0.1), backend)
+A_spd = A_base + HPCSparseMatrix(transpose(A_base), backend) +
+        HPCSparseMatrix(sparse(10.0I, 100, 100), backend)
+
+b = HPCVector(randn(100), backend)
 
 # Use Symmetric wrapper for faster solve
 x = Symmetric(A_spd) \ b
@@ -280,16 +308,17 @@ This MUMPS configuration (OMP=4, BLAS=4) achieved 14% faster performance than Ju
 The `map_rows` function applies a function to corresponding rows across distributed arrays:
 
 ```julia
-A = HPCMatrix(randn(50, 10))
+backend = BACKEND_CPU_MPI
+A = HPCMatrix(randn(50, 10), backend)
 
-# Compute row norms
+# Compute row norms (backend is inferred from A)
 norms = map_rows(row -> norm(row), A)  # Returns HPCVector
 
 # Compute row sums and products
 stats = map_rows(row -> [sum(row), prod(row)]', A)  # Returns HPCMatrix
 
 # Combine multiple inputs
-v = HPCVector(randn(50))
+v = HPCVector(randn(50), backend)
 weighted = map_rows((row, w) -> sum(row) * w[1], A, v)
 ```
 
@@ -309,13 +338,15 @@ weighted = map_rows((row, w) -> sum(row) * w[1], A, v)
 Convert distributed types back to native Julia arrays (gathers data to all ranks):
 
 ```julia
-v_mpi = HPCVector(randn(100))
+backend = BACKEND_CPU_MPI
+
+v_mpi = HPCVector(randn(100), backend)
 v_native = Vector(v_mpi)  # Full vector on all ranks
 
-A_mpi = HPCMatrix(randn(50, 30))
+A_mpi = HPCMatrix(randn(50, 30), backend)
 A_native = Matrix(A_mpi)  # Full matrix on all ranks
 
-S_mpi = HPCSparseMatrix{Float64}(sprandn(100, 100, 0.1))
+S_mpi = HPCSparseMatrix(sprandn(100, 100, 0.1), backend)
 S_native = SparseMatrixCSC(S_mpi)  # Full sparse matrix
 ```
 
@@ -346,7 +377,8 @@ nranks = MPI.Comm_size(MPI.COMM_WORLD) # Total number of ranks
 Redistribute data to match a different partition:
 
 ```julia
-v = HPCVector(randn(100))
+backend = BACKEND_CPU_MPI
+v = HPCVector(randn(100), backend)
 
 # Get current partition
 old_partition = v.partition
@@ -370,14 +402,28 @@ Load the GPU package **before** MPI for proper detection:
 # For Metal (macOS)
 using Metal
 using MPI
-using HPCLinearAlgebra
 MPI.Init()
+using HPCLinearAlgebra
 
 # For CUDA (Linux/Windows)
 using CUDA, NCCL, CUDSS_jll
 using MPI
-using HPCLinearAlgebra
 MPI.Init()
+using HPCLinearAlgebra
+```
+
+### Creating GPU Backends
+
+Use factory functions to create GPU backends:
+
+```julia
+comm = MPI.COMM_WORLD
+
+# Metal backend (macOS)
+metal_backend = backend_metal_mpi(comm)
+
+# CUDA backend (Linux/Windows)
+cuda_backend = backend_cuda_mpi(comm)
 ```
 
 ### Converting Between Backends
@@ -385,19 +431,15 @@ MPI.Init()
 Use `to_backend(obj, backend)` to convert between CPU and GPU:
 
 ```julia
-# Define backends
-cpu_backend = HPCBackend(DeviceCPU(), CommMPI(), SolverMUMPS())
-metal_backend = HPCBackend(DeviceMetal(), CommMPI(), SolverMUMPS())
-cuda_backend = HPCBackend(DeviceCUDA(), CommMPI(), SolverMUMPS())
+comm = MPI.COMM_WORLD
+cpu_backend = BACKEND_CPU_MPI
+metal_backend = backend_metal_mpi(comm)
 
 # Create CPU vector
 x_cpu = HPCVector(rand(Float32, 1000), cpu_backend)
 
 # Convert to GPU (Metal)
 x_gpu = to_backend(x_cpu, metal_backend)  # Returns HPCVector with MtlVector storage
-
-# Convert to GPU (CUDA)
-x_gpu = to_backend(x_cpu, cuda_backend)   # Returns HPCVector with CuVector storage
 
 # GPU operations work transparently
 y_gpu = x_gpu + x_gpu  # Native GPU addition
@@ -407,18 +449,33 @@ z_gpu = 2.0f0 * x_gpu  # Native GPU scalar multiply
 y_cpu = to_backend(y_gpu, cpu_backend)
 ```
 
+For CUDA:
+
+```julia
+comm = MPI.COMM_WORLD
+cpu_backend = BACKEND_CPU_MPI
+cuda_backend = backend_cuda_mpi(comm)
+
+# Create CPU vector
+x_cpu = HPCVector(rand(Float64, 1000), cpu_backend)
+
+# Convert to GPU (CUDA)
+x_gpu = to_backend(x_cpu, cuda_backend)   # Returns HPCVector with CuVector storage
+
+# GPU operations work transparently
+y_gpu = x_gpu + x_gpu  # Native GPU addition
+z_gpu = 2.0 * x_gpu    # Native GPU scalar multiply
+```
+
 ### How It Works
 
-The type parameter `AV` (or `AM` for matrices) determines where data lives:
+The backend's device type determines where data lives:
 
-| Type | Storage | Operations |
-|------|---------|------------|
-| `HPCVector{T, Vector{T}}` | CPU | Native CPU |
-| `HPCVector{T, MtlVector{T}}` | Metal GPU | Native GPU for vector ops |
-| `HPCVector{T, CuVector{T}}` | CUDA GPU | Native GPU for vector ops |
-| `HPCMatrix{T, Matrix{T}}` | CPU | Native CPU |
-| `HPCMatrix{T, MtlMatrix{T}}` | Metal GPU | Native GPU |
-| `HPCMatrix{T, CuMatrix{T}}` | CUDA GPU | Native GPU |
+| Backend Device | Storage | Operations |
+|----------------|---------|------------|
+| `DeviceCPU()` | `Vector`/`Matrix` | Native CPU |
+| `DeviceMetal()` | `MtlVector`/`MtlMatrix` | Native GPU for vector ops |
+| `DeviceCUDA()` | `CuVector`/`CuMatrix` | Native GPU for vector ops |
 
 ### MPI Communication
 
@@ -435,7 +492,7 @@ This is handled transparently - you just use the same operations.
 Sparse matrices (`HPCSparseMatrix`) remain on CPU. When multiplying with GPU vectors:
 
 ```julia
-cuda_backend = HPCBackend(DeviceCUDA(), CommMPI(), SolverMUMPS())
+cuda_backend = backend_cuda_mpi(MPI.COMM_WORLD)
 A = HPCSparseMatrix(sprand(100, 100, 0.1), cuda_backend)
 x_gpu = HPCVector(rand(100), cuda_backend)
 
@@ -469,15 +526,18 @@ For multi-GPU distributed sparse direct solves, HPCLinearAlgebra provides `CuDSS
 ```julia
 using CUDA, NCCL, CUDSS_jll
 using MPI
-using HPCLinearAlgebra
 MPI.Init()
+using HPCLinearAlgebra
 
 # Each MPI rank should use a different GPU
 CUDA.device!(MPI.Comm_rank(MPI.COMM_WORLD) % length(CUDA.devices()))
 
+# Create CUDA backend
+cuda_backend = backend_cuda_mpi(MPI.COMM_WORLD)
+
 # Create distributed sparse matrix (symmetric positive definite)
-A = HPCSparseMatrix{Float64}(make_spd_matrix(1000))
-b = HPCVector(rand(1000))
+A = HPCSparseMatrix(make_spd_matrix(1000), cuda_backend)
+b = HPCVector(rand(1000), cuda_backend)
 
 # Multi-GPU LDLT factorization
 F = cudss_ldlt(A)
