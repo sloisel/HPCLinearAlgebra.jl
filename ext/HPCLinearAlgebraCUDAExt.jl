@@ -28,7 +28,7 @@ using LinearAlgebra
 using HPCLinearAlgebra: HPCBackend, DeviceCPU, DeviceCUDA, DeviceMetal,
                         CommSerial, CommMPI, AbstractComm, AbstractDevice,
                         SolverMUMPS, AbstractSolverCuDSS,
-                        comm_rank, comm_size, comm_barrier
+                        comm_rank, comm_size
 
 # Type aliases for convenience
 const CuBackend{C,S} = HPCLinearAlgebra.HPCBackend{HPCLinearAlgebra.DeviceCUDA, C, S}
@@ -46,6 +46,9 @@ cuDSS sparse direct solver for CUDA GPUs.
 - With CommMPI: Multi-GPU Multi-Node (MGMN) cuDSS with NCCL backend
 """
 struct SolverCuDSS <: HPCLinearAlgebra.AbstractSolverCuDSS end
+
+# Type alias for cuDSS-specific backends (constrains solver type to SolverCuDSS)
+const CuDSSBackend{C} = HPCLinearAlgebra.HPCBackend{HPCLinearAlgebra.DeviceCUDA, C, SolverCuDSS}
 
 # ============================================================================
 # Pre-constructed Backend Constants
@@ -549,7 +552,7 @@ end
 # ============================================================================
 
 """
-    lu(A::HPCSparseMatrix{T,Ti,<:CuBackend})
+    lu(A::HPCSparseMatrix{T,Ti,<:CuDSSBackend})
 
 Compute LU factorization of a GPU sparse matrix using cuDSS.
 Returns a CuDSSFactorizationMPI that can be used with `F \\ b`.
@@ -557,21 +560,25 @@ Returns a CuDSSFactorizationMPI that can be used with `F \\ b`.
 If a previous factorization with the same sparsity structure exists,
 the cached analysis (permutation + elimination tree) is reused,
 skipping the expensive reordering phase.
+
+Note: This method is specific to cuDSS backends (SolverCuDSS).
 """
-function LinearAlgebra.lu(A::HPCLinearAlgebra.HPCSparseMatrix{T,Ti,<:CuBackend}) where {T,Ti}
+function LinearAlgebra.lu(A::HPCLinearAlgebra.HPCSparseMatrix{T,Ti,<:CuDSSBackend}) where {T,Ti}
     return _create_cudss_factorization(A, false)
 end
 
 """
-    ldlt(A::HPCSparseMatrix{T,Ti,<:CuBackend})
+    ldlt(A::HPCSparseMatrix{T,Ti,<:CuDSSBackend})
 
 Compute LDLT factorization of a symmetric positive definite GPU sparse matrix.
 Returns a CuDSSFactorizationMPI that can be used with `F \\ b`.
 
 If a previous factorization with the same sparsity structure exists,
 the cached analysis (permutation + elimination tree) is reused.
+
+Note: This method is specific to cuDSS backends (SolverCuDSS).
 """
-function LinearAlgebra.ldlt(A::HPCLinearAlgebra.HPCSparseMatrix{T,Ti,<:CuBackend}) where {T,Ti}
+function LinearAlgebra.ldlt(A::HPCLinearAlgebra.HPCSparseMatrix{T,Ti,<:CuDSSBackend}) where {T,Ti}
     return _create_cudss_factorization(A, true)
 end
 
@@ -693,12 +700,14 @@ _get_mpi_comm_for_nccl(c::HPCLinearAlgebra.CommMPI) = c.comm
 _get_mpi_comm_for_nccl(::HPCLinearAlgebra.CommSerial) = error("cuDSS MGMN mode requires MPI communication (CommMPI), not CommSerial")
 
 """
-    solve(F::CuDSSFactorizationMPI{T,B}, b::HPCVector{T,<:CuBackend}) where {T,B}
+    solve(F::CuDSSFactorizationMPI{T,B}, b::HPCVector{T,<:CuDSSBackend}) where {T,B}
 
 Solve the linear system using the cuDSS factorization.
 This is solve-only - no refactorization is performed.
+
+Note: This method is specific to cuDSS backends (SolverCuDSS).
 """
-function HPCLinearAlgebra.solve(F::CuDSSFactorizationMPI{T,B}, b::HPCLinearAlgebra.HPCVector{T,<:CuBackend}) where {T,B}
+function HPCLinearAlgebra.solve(F::CuDSSFactorizationMPI{T,B}, b::HPCLinearAlgebra.HPCVector{T,<:CuDSSBackend}) where {T,B}
     comm = F.backend.comm
 
     # Copy b directly to RHS buffer (GPU to GPU)
@@ -712,11 +721,13 @@ function HPCLinearAlgebra.solve(F::CuDSSFactorizationMPI{T,B}, b::HPCLinearAlgeb
 end
 
 """
-    \\(F::CuDSSFactorizationMPI{T,B}, b::HPCVector{T,<:CuBackend}) where {T,B}
+    \\(F::CuDSSFactorizationMPI{T,B}, b::HPCVector{T,<:CuDSSBackend}) where {T,B}
 
 Solve the linear system using backslash notation (solve-only, no refactorization).
+
+Note: This method is specific to cuDSS backends (SolverCuDSS).
 """
-function Base.:\(F::CuDSSFactorizationMPI{T,B}, b::HPCLinearAlgebra.HPCVector{T,<:CuBackend}) where {T,B}
+function Base.:\(F::CuDSSFactorizationMPI{T,B}, b::HPCLinearAlgebra.HPCVector{T,<:CuDSSBackend}) where {T,B}
     return HPCLinearAlgebra.solve(F, b)
 end
 
@@ -765,14 +776,16 @@ end
 # 3. The cudss matrix wrapper points to our values buffer - we update it in place
 
 """
-    _refactorize_and_solve!(F::CuDSSFactorizationMPI{T,B}, A::HPCSparseMatrix{T,Ti,B}, b::HPCVector{T,B}) where {T,Ti,B}
+    _refactorize_and_solve!(F::CuDSSFactorizationMPI{T,B}, A::HPCSparseMatrix{T,Ti,B}, b::HPCVector{T,B}) where {T,Ti,B<:CuDSSBackend}
 
 Update the values in a cached factorization, refactorize (skip analysis), and solve.
 Returns the solution vector.
+
+Note: This method is specific to cuDSS backends (SolverCuDSS).
 """
 function _refactorize_and_solve!(F::CuDSSFactorizationMPI{T,B},
                                   A::HPCLinearAlgebra.HPCSparseMatrix{T,Ti,B},
-                                  b::HPCLinearAlgebra.HPCVector{T,B}) where {T,Ti,B<:CuBackend}
+                                  b::HPCLinearAlgebra.HPCVector{T,B}) where {T,Ti,B<:CuDSSBackend}
     comm = F.backend.comm
 
     # Update values in the GPU buffer (the cudss matrix wrapper points to this)
@@ -794,7 +807,7 @@ function _refactorize_and_solve!(F::CuDSSFactorizationMPI{T,B},
 end
 
 """
-    \\(A::HPCSparseMatrix{T,Ti,B}, b::HPCVector{T,B}) where {T,Ti,B<:CuBackend}
+    \\(A::HPCSparseMatrix{T,Ti,B}, b::HPCVector{T,B}) where {T,Ti,B<:CuDSSBackend}
 
 Solve A*x = b using cuDSS with analysis caching.
 
@@ -802,9 +815,11 @@ First call for a given sparsity pattern: full analysis + factorization.
 Subsequent calls with same pattern: refactorize only (skip expensive analysis).
 
 The cuDSS data object is cached globally and reused - never destroyed.
+
+Note: This method is specific to cuDSS backends (SolverCuDSS).
 """
 function Base.:\(A::HPCLinearAlgebra.HPCSparseMatrix{T,Ti,B},
-                 b::HPCLinearAlgebra.HPCVector{T,B}) where {T,Ti,B<:CuBackend}
+                 b::HPCLinearAlgebra.HPCVector{T,B}) where {T,Ti,B<:CuDSSBackend}
     structural_hash = HPCLinearAlgebra._ensure_hash(A)
     cache_key = (structural_hash, false, T)  # false = not symmetric (LU)
 
@@ -826,12 +841,14 @@ function Base.:\(A::HPCLinearAlgebra.HPCSparseMatrix{T,Ti,B},
 end
 
 """
-    \\(A::Symmetric{T,<:HPCSparseMatrix{T,Ti,B}}, b::HPCVector{T,B}) where {T,Ti,B<:CuBackend}
+    \\(A::Symmetric{T,<:HPCSparseMatrix{T,Ti,B}}, b::HPCVector{T,B}) where {T,Ti,B<:CuDSSBackend}
 
 Solve A*x = b for a symmetric matrix using LDLT with analysis caching.
+
+Note: This method is specific to cuDSS backends (SolverCuDSS).
 """
 function Base.:\(A::Symmetric{T,<:HPCLinearAlgebra.HPCSparseMatrix{T,Ti,B}},
-                 b::HPCLinearAlgebra.HPCVector{T,B}) where {T,Ti,B<:CuBackend}
+                 b::HPCLinearAlgebra.HPCVector{T,B}) where {T,Ti,B<:CuDSSBackend}
     A_inner = parent(A)
     structural_hash = HPCLinearAlgebra._ensure_hash(A_inner)
     cache_key = (structural_hash, true, T)  # true = symmetric (LDLT)

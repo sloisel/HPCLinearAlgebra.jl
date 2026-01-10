@@ -33,7 +33,7 @@ export HPCBackendCPU, HPCBackendMetal, HPCBackendCUDA
 export backend_cpu_serial, backend_cpu_mpi, backend_metal_mpi, backend_cuda_serial, backend_cuda_mpi
 export BACKEND_CPU_SERIAL, BACKEND_CPU_MPI  # Pre-constructed CPU backend constants
 # CUDA backends: use backend_cuda_serial() and backend_cuda_mpi() after loading CUDA
-export comm_rank, comm_size, comm_barrier
+export comm_rank, comm_size
 export array_type, matrix_type
 export backends_compatible, assert_backends_compatible
 
@@ -588,13 +588,17 @@ end
 # ============================================================================
 
 """
-    Base.:\\(A::HPCSparseMatrix{T}, b::HPCVector{T}) where T
+    Base.:\\(A::HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}}, b::HPCVector{T,HPCBackend{D,C,SolverMUMPS}}) where {T,Ti,D,C}
 
-Solve A*x = b using LU factorization.
+Solve A*x = b using LU factorization with MUMPS.
 For symmetric matrices, use `Symmetric(A) \\ b` to use the faster LDLT factorization.
 For repeated solves, compute the factorization once with `lu(A)` or `ldlt(A)`.
+
+Note: This method is specific to MUMPS backends. GPU backends (cuDSS) have their own
+specialized backslash methods defined in the CUDA extension.
 """
-function Base.:\(A::HPCSparseMatrix{T}, b::HPCVector{T}) where T
+function Base.:\(A::HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}},
+                 b::HPCVector{T,HPCBackend{D,C,SolverMUMPS}}) where {T,Ti,D,C}
     F = LinearAlgebra.lu(A)
     x = F \ b
     finalize!(F)
@@ -602,12 +606,16 @@ function Base.:\(A::HPCSparseMatrix{T}, b::HPCVector{T}) where T
 end
 
 """
-    Base.:\\(A::Symmetric{T,<:HPCSparseMatrix{T}}, b::HPCVector{T}) where T
+    Base.:\\(A::Symmetric{T,<:HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}}}, b::HPCVector{T,HPCBackend{D,C,SolverMUMPS}}) where {T,Ti,D,C}
 
-Solve A*x = b for a symmetric matrix using LDLT (no symmetry check needed).
+Solve A*x = b for a symmetric matrix using LDLT with MUMPS (no symmetry check needed).
 Use `Symmetric(A)` to wrap a known-symmetric matrix and skip the expensive symmetry check.
+
+Note: This method is specific to MUMPS backends. GPU backends (cuDSS) have their own
+specialized backslash methods defined in the CUDA extension.
 """
-function Base.:\(A::Symmetric{T,<:HPCSparseMatrix{T}}, b::HPCVector{T}) where T
+function Base.:\(A::Symmetric{T,<:HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}}},
+                 b::HPCVector{T,HPCBackend{D,C,SolverMUMPS}}) where {T,Ti,D,C}
     F = LinearAlgebra.ldlt(parent(A))
     x = F \ b
     finalize!(F)
@@ -615,11 +623,15 @@ function Base.:\(A::Symmetric{T,<:HPCSparseMatrix{T}}, b::HPCVector{T}) where T
 end
 
 """
-    Base.:\\(At::Transpose{T,<:HPCSparseMatrix{T}}, b::HPCVector{T}) where T
+    Base.:\\(At::Transpose{T,<:HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}}}, b::HPCVector{T,HPCBackend{D,C,SolverMUMPS}}) where {T,Ti,D,C}
 
-Solve transpose(A)*x = b using LU factorization.
+Solve transpose(A)*x = b using LU factorization with MUMPS.
+
+Note: This method is specific to MUMPS backends. GPU backends (cuDSS) have their own
+specialized backslash methods defined in the CUDA extension.
 """
-function Base.:\(At::Transpose{T,<:HPCSparseMatrix{T}}, b::HPCVector{T}) where T
+function Base.:\(At::Transpose{T,<:HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}}},
+                 b::HPCVector{T,HPCBackend{D,C,SolverMUMPS}}) where {T,Ti,D,C}
     A_t = HPCSparseMatrix(At)
     F = LinearAlgebra.lu(A_t)
     x = F \ b
@@ -635,23 +647,29 @@ end
 # For row vectors: transpose(v) / A solves x * A = transpose(v)
 
 """
-    Base.:/(vt::Transpose{T,HPCVector{T}}, A::HPCSparseMatrix{T}) where T
+    Base.:/(vt::Transpose{T,HPCVector{T,HPCBackend{D,C,SolverMUMPS}}}, A::HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}}) where {T,Ti,D,C}
 
 Solve x * A = transpose(v), returning x as a transposed HPCVector.
 Equivalent to transpose(transpose(A) \\ v).
+
+Note: This method is specific to MUMPS backends.
 """
-function Base.:/(vt::Transpose{T,HPCVector{T}}, A::HPCSparseMatrix{T}) where T
+function Base.:/(vt::Transpose{T,HPCVector{T,HPCBackend{D,C,SolverMUMPS}}},
+                 A::HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}}) where {T,Ti,D,C}
     v = vt.parent
     x = transpose(A) \ v
     return transpose(x)
 end
 
 """
-    Base.:/(vt::Transpose{T,HPCVector{T}}, At::Transpose{T,<:HPCSparseMatrix{T}}) where T
+    Base.:/(vt::Transpose{T,HPCVector{T,HPCBackend{D,C,SolverMUMPS}}}, At::Transpose{T,<:HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}}}) where {T,Ti,D,C}
 
 Solve x * transpose(A) = transpose(v), returning x as a transposed HPCVector.
+
+Note: This method is specific to MUMPS backends.
 """
-function Base.:/(vt::Transpose{T,HPCVector{T}}, At::Transpose{T,<:HPCSparseMatrix{T}}) where T
+function Base.:/(vt::Transpose{T,HPCVector{T,HPCBackend{D,C,SolverMUMPS}}},
+                 At::Transpose{T,<:HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}}}) where {T,Ti,D,C}
     v = vt.parent
     A = At.parent
     x = A \ v

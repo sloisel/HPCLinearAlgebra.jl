@@ -297,14 +297,6 @@ function comm_waitall(::CommMPI, requests)
     end
 end
 
-"""
-    comm_barrier(comm::AbstractComm)
-
-Synchronization barrier. For CommSerial, this is a no-op.
-"""
-comm_barrier(::CommSerial) = nothing
-comm_barrier(c::CommMPI) = MPI.Barrier(c.comm)
-
 # ============================================================================
 # HPCBackend Factory Functions
 # ============================================================================

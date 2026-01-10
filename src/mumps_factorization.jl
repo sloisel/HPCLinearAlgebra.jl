@@ -469,23 +469,29 @@ end
 # ============================================================================
 
 """
-    LinearAlgebra.lu(A::HPCSparseMatrix{T,Ti,B}) where {T,Ti,B}
+    LinearAlgebra.lu(A::HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}}) where {T,Ti,D,C}
 
 Compute LU factorization of a distributed sparse matrix using MUMPS.
 Returns a `MUMPSFactorization` for use with `\\` or `solve`.
+
+Note: This method is specific to MUMPS backends. GPU backends (cuDSS) define their own
+lu method in the CUDA extension.
 """
-function LinearAlgebra.lu(A::HPCSparseMatrix{T,Ti,B}) where {T,Ti,B}
+function LinearAlgebra.lu(A::HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}}) where {T,Ti,D,C}
     return _create_mumps_factorization(A, false)
 end
 
 """
-    LinearAlgebra.ldlt(A::HPCSparseMatrix{T,Ti,B}) where {T,Ti,B}
+    LinearAlgebra.ldlt(A::HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}}) where {T,Ti,D,C}
 
 Compute LDLT factorization of a distributed symmetric sparse matrix using MUMPS.
 The matrix must be symmetric; only the lower triangular part is used.
 Returns a `MUMPSFactorization` for use with `\\` or `solve`.
+
+Note: This method is specific to MUMPS backends. GPU backends (cuDSS) define their own
+ldlt method in the CUDA extension.
 """
-function LinearAlgebra.ldlt(A::HPCSparseMatrix{T,Ti,B}) where {T,Ti,B}
+function LinearAlgebra.ldlt(A::HPCSparseMatrix{T,Ti,HPCBackend{D,C,SolverMUMPS}}) where {T,Ti,D,C}
     return _create_mumps_factorization(A, true)
 end
 
